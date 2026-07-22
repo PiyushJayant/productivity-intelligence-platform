@@ -35,7 +35,7 @@ tools:
         description: Due date in YYYY-MM-DD format, or empty string if none
     statement: >
       INSERT INTO tasks (title, description, priority, due_date)
-      VALUES ($1, $2, $3, $4)
+      VALUES ($1, $2, $3, NULLIF($4, '')::date)
       RETURNING id, title, priority, status, due_date, created_at;
 
   list_tasks:
@@ -106,7 +106,7 @@ tools:
       INSERT INTO notes (title, content, tags, embedding)
       VALUES (
         $1, $2, $3,
-        embedding('text-embedding-005', $1 || ' ' || $2)::vector
+        google_ml.embedding('text-embedding-005', $1 || ' ' || $2)::vector
       )
       RETURNING id, title, tags, created_at;
 
@@ -115,15 +115,24 @@ tools:
     source: alloydb-productivity
     description: >
       Search notes using AlloyDB AI semantic vector similarity.
-      Returns the 5 most relevant notes for the given natural language query.
+      Returns up to 5 relevant notes with a cosine relevance score.
     parameters:
       - name: query
         type: string
         description: Natural language search query
     statement: >
-      SELECT id, title, content, tags, created_at
-      FROM notes
-      ORDER BY embedding <=> embedding('text-embedding-005', $1)::vector
+      WITH ranked AS (
+        SELECT id, title, content, tags, created_at,
+          1 - (embedding <=> google_ml.embedding('text-embedding-005', $1)::vector)
+            AS relevance_score
+        FROM notes
+        WHERE embedding IS NOT NULL
+      )
+      SELECT id, title, content, tags, created_at,
+        ROUND(relevance_score::numeric, 3) AS relevance_score
+      FROM ranked
+      WHERE relevance_score >= 0.50
+      ORDER BY relevance_score DESC
       LIMIT 5;
 
   list_notes:
@@ -179,7 +188,7 @@ tools:
         description: Optional description or agenda for the event
     statement: >
       INSERT INTO events (title, date, time, duration_minutes, description)
-      VALUES ($1, $2, $3, $4, $5)
+      VALUES ($1, $2::date, $3::time, $4, $5)
       RETURNING id, title, date, time, duration_minutes, created_at;
 
   list_events:
@@ -195,7 +204,7 @@ tools:
     statement: >
       SELECT id, title, date, time, duration_minutes, description, created_at
       FROM events
-      WHERE $1 = '' OR date = $1
+      WHERE NULLIF($1, '') IS NULL OR date = NULLIF($1, '')::date
       ORDER BY date ASC, time ASC;
 
   delete_event:

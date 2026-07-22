@@ -1,319 +1,249 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
 set -euo pipefail
-
-# ╔════════════════════════════════════════════════════════════════════════════╗
-# ║  Unified Deployment Script                                                 ║
-# ║  Deploys productivity assistant and/or MCP toolbox to Cloud Run            ║
-# ║  Usage:                                                                    ║
-# ║    ./setup/deploy.sh --mode full       (toolbox + assistant)               ║
-# ║    ./setup/deploy.sh --mode toolbox    (toolbox only)                      ║
-# ║    ./setup/deploy.sh --mode assistant  (assistant only)                    ║
-# ║    ./setup/deploy.sh --mode prototype  (assistant only, no toolbox)        ║
-# ╚════════════════════════════════════════════════════════════════════════════╝
-
-MODE="full"
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --mode)
-      MODE="$2"
-      shift 2
-      ;;
-    *)
-      echo "Unknown argument: $1"
-      exit 1
-      ;;
-  esac
-done
-
-PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}"
-REGION="${REGION:-us-central1}"
-ASSISTANT_SERVICE_NAME="${ASSISTANT_SERVICE_NAME:-productivity-assistant}"
-TOOLBOX_SERVICE_NAME="${TOOLBOX_SERVICE_NAME:-mcp-toolbox}"
-AR_REPO="${AR_REPO:-productivity-services}"
-GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
-MODEL="${MODEL:-gemini-2.5-flash}"
-
-ALLOYDB_IP_TYPE="${ALLOYDB_IP_TYPE:-private}"
-VPC_CONNECTOR="${VPC_CONNECTOR:-toolbox-vpc-connector}"
-VPC_EGRESS="${VPC_EGRESS:-private-ranges-only}"
-VPC_NETWORK="${VPC_NETWORK:-easy-alloydb-vpc}"
-VPC_CONNECTOR_RANGE="${VPC_CONNECTOR_RANGE:-10.8.0.0/28}"
-VPC_CONNECTOR_RANGE_FALLBACK="${VPC_CONNECTOR_RANGE_FALLBACK:-10.9.0.0/28}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BUILD_CONFIG="${REPO_ROOT}/cloudbuild.toolbox.yaml"
-IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${TOOLBOX_SERVICE_NAME}:latest"
+# shellcheck source=setup/common.sh
+source "${SCRIPT_DIR}/common.sh"
 
-if [ -z "${PROJECT_ID}" ] || [ "${PROJECT_ID}" = "(unset)" ]; then
-  echo "Error: GOOGLE_CLOUD_PROJECT is not set and no active gcloud project was found."
+ACTION="${1:-full}"
+SEED_DEMO="${SEED_DEMO:-false}"
+BUILD_TAG_FILE="${REPO_ROOT}/.deploy-build-tag"
+if [[ -n "${BUILD_TAG:-}" ]]; then
+  BUILD_TAG="${BUILD_TAG}"
+elif [[ "${ACTION}" == "build" || "${ACTION}" == "full" ]]; then
+  BUILD_TAG="$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
+elif [[ -f "${BUILD_TAG_FILE}" ]]; then
+  BUILD_TAG="$(<"${BUILD_TAG_FILE}")"
+else
+  echo "Error: no successful build tag found. Run '$0 build' first." >&2
   exit 1
 fi
+IMAGE_ROOT="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}"
+ASSISTANT_IMAGE="${IMAGE_ROOT}/${ASSISTANT_SERVICE_NAME}:${BUILD_TAG}"
+TOOLBOX_IMAGE="${IMAGE_ROOT}/${TOOLBOX_SERVICE_NAME}:${BUILD_TAG}"
+MIGRATION_IMAGE="${IMAGE_ROOT}/${MIGRATION_JOB_NAME}:${BUILD_TAG}"
 
-# Load .env if present (required for deployment)
-if [ -f "${REPO_ROOT}/.env" ]; then
-  set -a
-  source "${REPO_ROOT}/.env"
-  set +a
-  echo "✓ Loaded .env"
-else
-  echo "Warning: .env not found. Run ./setup/setup.sh all first"
-fi
-
-# SERVICE_ACCOUNT is optional — Cloud Run uses the default compute SA if not set
-if [ -n "${SERVICE_ACCOUNT:-}" ]; then
-  echo "Service Account: ${SERVICE_ACCOUNT}"
-fi
-
-echo "=========================================="
-echo "Deployment Script"
-echo "=========================================="
-echo "Project:   ${PROJECT_ID}"
-echo "Region:    ${REGION}"
-echo "Mode:      ${MODE}"
-echo ""
-
-
-enable_apis() {
-  echo "Enabling required APIs..."
-  gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com aiplatform.googleapis.com vpcaccess.googleapis.com --project="${PROJECT_ID}"
-}
-
-ensure_repo() {
-  if ! gcloud artifacts repositories describe "${AR_REPO}" --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    echo "Creating Artifact Registry repository..."
-    gcloud artifacts repositories create "${AR_REPO}" \
-      --repository-format=docker \
-      --location="${REGION}" \
-      --description="Images for productivity assistant services" \
-      --project="${PROJECT_ID}"
-  fi
-}
-
-connector_state() {
-  gcloud compute networks vpc-access connectors describe "${VPC_CONNECTOR}" \
-    --region "${REGION}" \
-    --project "${PROJECT_ID}" \
-    --format='value(state)' 2>/dev/null || true
-}
-
-wait_for_connector_ready() {
-  local tries=0
-  local state=""
-  echo "Waiting for VPC connector to be ready..."
-  while [ $tries -lt 40 ]; do
-    state="$(connector_state)"
-    if [ "${state}" = "READY" ]; then
-      echo "✓ VPC connector is READY"
-      return 0
-    fi
-    if [ "${state}" = "ERROR" ]; then
-      echo "✗ VPC connector state is ERROR"
-      return 1
-    fi
-    tries=$((tries + 1))
-    sleep 10
-  done
-  echo "✗ VPC connector did not reach READY state within timeout"
-  return 1
-}
-
-create_connector() {
-  local cidr="$1"
-  echo "Creating VPC connector with CIDR ${cidr}..."
-  gcloud compute networks vpc-access connectors create "${VPC_CONNECTOR}" \
-    --network "${VPC_NETWORK}" \
-    --region "${REGION}" \
-    --range "${cidr}" \
-    --project "${PROJECT_ID}"
-}
-
-ensure_connector() {
-  if [ "${ALLOYDB_IP_TYPE}" != "private" ]; then
-    return 0
-  fi
-
-  if [ -z "${VPC_CONNECTOR}" ]; then
-    echo "Error: VPC_CONNECTOR is required when ALLOYDB_IP_TYPE=private"
-    exit 1
-  fi
-
-  local state
-  state="$(connector_state)"
-  if [ "${state}" = "ERROR" ]; then
-    echo "Removing broken VPC connector..."
-    gcloud compute networks vpc-access connectors delete "${VPC_CONNECTOR}" --region "${REGION}" --project "${PROJECT_ID}" --quiet
-  fi
-
-  if ! gcloud compute networks vpc-access connectors describe "${VPC_CONNECTOR}" --region "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-    create_connector "${VPC_CONNECTOR_RANGE}"
-  fi
-
-  if ! wait_for_connector_ready; then
-    echo "Trying with fallback CIDR range..."
-    gcloud compute networks vpc-access connectors delete "${VPC_CONNECTOR}" --region "${REGION}" --project "${PROJECT_ID}" --quiet
-    create_connector "${VPC_CONNECTOR_RANGE_FALLBACK}"
-    if ! wait_for_connector_ready; then
-      echo "Error: VPC connector ${VPC_CONNECTOR} is not READY"
-      exit 1
-    fi
-  fi
-}
-
-prepare_assistant_source() {
-  local source_dir
-  source_dir="$(mktemp -d)"
-
-  cp "${REPO_ROOT}/requirements.txt" "${source_dir}/requirements.txt"
-  cp -R "${REPO_ROOT}/productivity_assistant" "${source_dir}/productivity_assistant"
-
-  cat > "${source_dir}/main.py" <<'EOF'
-import logging
-import os
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-logger.info("Starting productivity assistant...")
-
-try:
-    from google.adk.cli.fast_api import get_fast_api_app
-
-    app = get_fast_api_app(
-        agents_dir=os.path.dirname(os.path.abspath(__file__)),
-        web=True,
-    )
-    logger.info("ADK FastAPI app created successfully")
-except Exception as e:
-    logger.error("Failed to create ADK app: %s", e, exc_info=True)
-    from fastapi import FastAPI
-    app = FastAPI(title="Productivity Assistant (fallback)")
-
-    @app.get("/")
-    def health():
-        return {"status": "error", "detail": str(e)}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-EOF
-
-  cat > "${source_dir}/Procfile" <<'EOF'
-web: uvicorn main:app --host 0.0.0.0 --port $PORT
-EOF
-
-  echo "${source_dir}"
+build_images() {
+  gcloud builds submit "${REPO_ROOT}" --project="${PROJECT_ID}" \
+    --config="${REPO_ROOT}/cloudbuild.toolbox.yaml" \
+    --substitutions="_IMAGE_URI=${TOOLBOX_IMAGE}"
+  gcloud builds submit "${REPO_ROOT}" --project="${PROJECT_ID}" \
+    --config="${REPO_ROOT}/cloudbuild.assistant.yaml" \
+    --substitutions="_IMAGE_URI=${ASSISTANT_IMAGE}"
+  gcloud builds submit "${REPO_ROOT}" --project="${PROJECT_ID}" \
+    --config="${REPO_ROOT}/cloudbuild.migrate.yaml" \
+    --substitutions="_IMAGE_URI=${MIGRATION_IMAGE}"
+  printf '%s\n' "${BUILD_TAG}" >"${BUILD_TAG_FILE}"
 }
 
 deploy_toolbox() {
-  echo ""
-  echo "Deploying MCP Toolbox..."
-  
-  required=(ALLOYDB_REGION ALLOYDB_CLUSTER ALLOYDB_INSTANCE ALLOYDB_DATABASE ALLOYDB_USER ALLOYDB_PASSWORD)
-  for v in "${required[@]}"; do
-    if [ -z "${!v:-}" ]; then
-      echo "Error: missing required environment variable: ${v}"
-      exit 1
-    fi
-  done
+  local app_secret_version
+  app_secret_version="$(secret_version "${APP_DB_SECRET}")"
+  [[ -n "${app_secret_version}" ]] || {
+    echo "Error: ${APP_DB_SECRET} has no enabled version." >&2
+    exit 1
+  }
 
-  ensure_repo
-  ensure_connector
+  gcloud run deploy "${TOOLBOX_SERVICE_NAME}" --image="${TOOLBOX_IMAGE}" \
+    --region="${REGION}" --project="${PROJECT_ID}" --platform=managed \
+    --service-account="${TOOLBOX_SA}" --no-allow-unauthenticated --port=5000 \
+    --network="${VPC_NETWORK}" --subnet="${VPC_SUBNET}" \
+    --vpc-egress=private-ranges-only \
+    --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE},ALLOYDB_IP_TYPE=private,ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ALLOYDB_USER=${ALLOYDB_USER}" \
+    --set-secrets="ALLOYDB_PASSWORD=${APP_DB_SECRET}:${app_secret_version}"
 
-  echo "Building and pushing toolbox image..."
-  gcloud builds submit --config "${BUILD_CONFIG}" --substitutions "_IMAGE_URI=${IMAGE_URI}" --project="${PROJECT_ID}" "${REPO_ROOT}"
+  gcloud run services add-iam-policy-binding "${TOOLBOX_SERVICE_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" \
+    --member="serviceAccount:${ASSISTANT_SA}" --role=roles/run.invoker --quiet
+}
 
-  echo "Deploying toolbox to Cloud Run..."
-  deploy_args=(
-    --image "${IMAGE_URI}"
-    --region "${REGION}"
-    --platform managed
-    --allow-unauthenticated
-    --port 5000
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE},ALLOYDB_IP_TYPE=${ALLOYDB_IP_TYPE},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ALLOYDB_USER=${ALLOYDB_USER},ALLOYDB_PASSWORD=${ALLOYDB_PASSWORD}"
-  )
+run_migration() {
+  local admin_version app_version analytics_version instance_uri
+  admin_version="$(secret_version "${ADMIN_DB_SECRET}")"
+  app_version="$(secret_version "${APP_DB_SECRET}")"
+  analytics_version="$(secret_version "${ANALYTICS_DB_SECRET}")"
+  instance_uri="projects/${PROJECT_ID}/locations/${REGION}/clusters/${ALLOYDB_CLUSTER}/instances/${ALLOYDB_INSTANCE}"
 
-  if [ -n "${VPC_CONNECTOR}" ] && [ "${ALLOYDB_IP_TYPE}" = "private" ]; then
-    deploy_args+=(--vpc-connector "${VPC_CONNECTOR}" --vpc-egress "${VPC_EGRESS}")
+  gcloud run jobs deploy "${MIGRATION_JOB_NAME}" --image="${MIGRATION_IMAGE}" \
+    --region="${REGION}" --project="${PROJECT_ID}" \
+    --service-account="${MIGRATION_SA}" --network="${VPC_NETWORK}" \
+    --subnet="${VPC_SUBNET}" --vpc-egress=private-ranges-only \
+    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},SEED_DEMO=${SEED_DEMO}" \
+    --set-secrets="ADMIN_DB_PASSWORD=${ADMIN_DB_SECRET}:${admin_version},APP_DB_PASSWORD=${APP_DB_SECRET}:${app_version},ANALYTICS_DB_PASSWORD=${ANALYTICS_DB_SECRET}:${analytics_version}" \
+    --max-retries=0 --task-timeout=15m
+  gcloud run jobs execute "${MIGRATION_JOB_NAME}" --region="${REGION}" \
+    --project="${PROJECT_ID}" --wait
+}
+
+ensure_bigquery_connection() {
+  if "${BQ_BIN}" show --connection --location="${REGION}" \
+      --project_id="${PROJECT_ID}" "${BIGQUERY_CONNECTION_ID}" >/dev/null 2>&1; then
+    return
   fi
 
-  gcloud run deploy "${TOOLBOX_SERVICE_NAME}" "${deploy_args[@]}"
-  
-  echo "✓ Toolbox deployed"
+  local payload response password_file token resource
+  payload="$(mktemp)"
+  response="$(mktemp)"
+  password_file="$(mktemp)"
+  trap 'rm -f "${payload}" "${response}" "${password_file}"' RETURN
+  chmod 600 "${payload}" "${response}" "${password_file}"
+  gcloud secrets versions access \
+    "$(secret_version "${ANALYTICS_DB_SECRET}")" --secret="${ANALYTICS_DB_SECRET}" \
+    --project="${PROJECT_ID}" --out-file="${password_file}" >/dev/null
+  resource="//alloydb.googleapis.com/projects/${PROJECT_ID}/locations/${REGION}/clusters/${ALLOYDB_CLUSTER}/instances/${ALLOYDB_INSTANCE}"
+  "${PYTHON_BIN}" - "${payload}" "${resource}" "${ALLOYDB_DATABASE}" \
+      "${ANALYTICS_DB_USER}" "${password_file}" <<'PY'
+import json, sys
+path, resource, database, username, password_path = sys.argv[1:]
+with open(password_path, encoding="utf-8") as secret_stream:
+    password = secret_stream.read()
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump({
+        "friendlyName": "Productivity AlloyDB live analytics",
+        "configuration": {
+            "connectorId": "google-alloydb",
+            "asset": {"database": database, "googleCloudResource": resource},
+            "authentication": {"usernamePassword": {
+                "username": username, "password": {"plaintext": password}
+            }},
+        },
+    }, stream)
+PY
+  token="$(gcloud auth print-access-token)"
+  curl -fsS -X POST \
+    "https://bigqueryconnection.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/connections?connectionId=${BIGQUERY_CONNECTION_ID}" \
+    -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
+    --data-binary "@${payload}" >"${response}"
+  unset token
+
+  local connection_sa
+  connection_sa="$("${PYTHON_BIN}" - "${response}" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("configuration", {}).get("authentication", {}).get("serviceAccount", ""))
+PY
+)"
+  [[ -n "${connection_sa}" ]] || {
+    echo "Error: BigQuery connection response did not contain a service account." >&2
+    exit 1
+  }
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${connection_sa}" --role=roles/alloydb.client \
+    --condition=None --quiet >/dev/null
 }
 
 deploy_assistant() {
-  local toolbox_url="${TOOLBOX_URL:-}"
-  local prototype="${1:-false}"
-
-  if [ -z "${toolbox_url}" ] && [ "${prototype}" = "false" ]; then
-    toolbox_url="$(gcloud run services describe "${TOOLBOX_SERVICE_NAME}" --region "${REGION}" --format='value(status.url)' 2>/dev/null || true)"
-  fi
-
-  if [ -z "${toolbox_url}" ] && [ "${prototype}" = "false" ]; then
-    echo "Error: TOOLBOX_URL is empty. Deploy toolbox first or use --mode prototype"
+  local toolbox_url
+  local -a traffic_args=(--tag=candidate)
+  toolbox_url="$(gcloud run services describe "${TOOLBOX_SERVICE_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')"
+  [[ "${toolbox_url}" == https://* ]] || {
+    echo "Error: deployed Toolbox URL is invalid." >&2
     exit 1
+  }
+
+  if gcloud run services describe "${ASSISTANT_SERVICE_NAME}" \
+      --region="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    traffic_args+=(--no-traffic)
   fi
 
-  echo ""
-  echo "Deploying Assistant to Cloud Run using Dockerfile..."
-
-  local env_vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},GOOGLE_GENAI_USE_VERTEXAI=true,MODEL=${MODEL}"
-
-  if [ "${prototype}" = "true" ]; then
-    env_vars="${env_vars},PROTOTYPE_MODE=true"
-  else
-    env_vars="${env_vars},TOOLBOX_URL=${toolbox_url}"
-  fi
-
-  gcloud run deploy "${ASSISTANT_SERVICE_NAME}" \
-    --source "${REPO_ROOT}" \
-    --region "${REGION}" \
-    --platform managed \
-    --allow-unauthenticated \
-    --memory 1Gi \
-    --timeout 300 \
-    --clear-base-image \
-    --set-env-vars "${env_vars}"
-
-  echo "✓ Assistant deployed"
-  echo ""
-  echo "Assistant URL:"
-  gcloud run services describe "${ASSISTANT_SERVICE_NAME}" --region "${REGION}" --format='value(status.url)'
+  gcloud run deploy "${ASSISTANT_SERVICE_NAME}" --image="${ASSISTANT_IMAGE}" \
+    --region="${REGION}" --project="${PROJECT_ID}" --platform=managed \
+    --service-account="${ASSISTANT_SA}" --allow-unauthenticated \
+    --memory=1Gi --timeout=300 "${traffic_args[@]}" \
+    --set-env-vars="APP_MODE=${APP_MODE},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},GOOGLE_GENAI_USE_VERTEXAI=true,MODEL=${MODEL},TOOLBOX_URL=${toolbox_url},TOOLBOX_AUDIENCE=${toolbox_url},BIGQUERY_CONNECTION_ID=${BIGQUERY_CONNECTION_ID}"
 }
 
-enable_apis
+setup_analytics() {
+  GOOGLE_CLOUD_PROJECT="${PROJECT_ID}" REGION="${REGION}" \
+    BIGQUERY_CONNECTION_ID="${BIGQUERY_CONNECTION_ID}" \
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/bigquery_setup.py"
+}
 
-case "${MODE}" in
-  toolbox)
-    deploy_toolbox
-    ;;
-  assistant)
-    deploy_assistant false
-    ;;
-  prototype)
-    deploy_assistant true
-    ;;
+verify_candidate() {
+  local toolbox_url assistant_url unauth_status identity_token
+  toolbox_url="$(gcloud run services describe "${TOOLBOX_SERVICE_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')"
+  unauth_status="$(curl -sS -o /dev/null -w '%{http_code}' "${toolbox_url}" || true)"
+  [[ "${unauth_status}" == "401" || "${unauth_status}" == "403" ]] || {
+    echo "Error: Toolbox accepted unauthenticated traffic (HTTP ${unauth_status})." >&2
+    exit 1
+  }
+  identity_token="$(gcloud auth print-identity-token \
+    --impersonate-service-account="${ASSISTANT_SA}" --audiences="${toolbox_url}")"
+  curl -fsS -H "Authorization: Bearer ${identity_token}" "${toolbox_url}" >/dev/null
+  unset identity_token
+
+  assistant_url="$(gcloud run services describe "${ASSISTANT_SERVICE_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" --format=json | \
+    "${PYTHON_BIN}" -c "import json,sys; d=json.load(sys.stdin); print(next(x['url'] for x in d['status']['traffic'] if x.get('tag')=='candidate'))")"
+  local health_status readiness_file
+  health_status="$(curl -sS -o /dev/null -w '%{http_code}' "${assistant_url}/healthz")"
+  if [[ "${health_status}" == "404" ]]; then
+    # Google Front End reserves exact /healthz on run.app services.
+    curl -fsS "${assistant_url}/health" >/dev/null
+  elif [[ "${health_status}" != "200" ]]; then
+    echo "Error: candidate liveness failed with HTTP ${health_status}." >&2
+    exit 1
+  fi
+  readiness_file="$(mktemp)"
+  trap 'rm -f "${readiness_file}"' RETURN
+  curl -fsS "${assistant_url}/readyz" >"${readiness_file}"
+  "${PYTHON_BIN}" - "${readiness_file}" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+expected = ["analytics_agent", "calendar_agent", "notes_agent", "task_agent"]
+if not data.get("ready") or sorted(data.get("loaded_agents", [])) != expected:
+    raise SystemExit(f"candidate readiness mismatch: {data}")
+PY
+  echo "[OK] Candidate verified: ${assistant_url}"
+}
+
+promote() {
+  gcloud run services update-traffic "${ASSISTANT_SERVICE_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" --to-tags=candidate=100
+  gcloud run services describe "${ASSISTANT_SERVICE_NAME}" --region="${REGION}" \
+    --project="${PROJECT_ID}" --format='value(status.url)'
+}
+
+rollback() {
+  local revision="${2:-}"
+  [[ -n "${revision}" ]] || {
+    echo "Usage: $0 rollback REVISION" >&2
+    exit 1
+  }
+  gcloud run services update-traffic "${ASSISTANT_SERVICE_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" \
+    --to-revisions="${revision}=100"
+}
+
+preflight
+case "${ACTION}" in
+  preflight) ;;
+  provision) "${SCRIPT_DIR}/provision.sh" ;;
+  build) build_images ;;
+  migrate) run_migration ;;
+  toolbox) deploy_toolbox ;;
+  assistant) deploy_assistant ;;
+  analytics) ensure_bigquery_connection; setup_analytics ;;
+  deploy) run_migration; deploy_toolbox; ensure_bigquery_connection; setup_analytics; deploy_assistant ;;
+  verify) setup_analytics; verify_candidate ;;
+  promote) promote ;;
+  rollback) rollback "$@" ;;
   full)
+    "${SCRIPT_DIR}/provision.sh"
+    build_images
+    run_migration
     deploy_toolbox
-    TOOLBOX_URL="$(gcloud run services describe "${TOOLBOX_SERVICE_NAME}" --region "${REGION}" --format='value(status.url)' 2>/dev/null || true)"
-    if [ -z "${TOOLBOX_URL}" ]; then
-      echo "Error: could not resolve TOOLBOX_URL after toolbox deployment"
-      exit 1
-    fi
-    if ! curl -fsS "${TOOLBOX_URL}" >/dev/null 2>&1; then
-      echo "Error: toolbox URL is not reachable at ${TOOLBOX_URL}"
-      exit 1
-    fi
-    export TOOLBOX_URL
-    deploy_assistant false
+    ensure_bigquery_connection
+    setup_analytics
+    deploy_assistant
+    verify_candidate
+    promote
     ;;
   *)
-    echo "Usage: ./setup/deploy.sh --mode [full|toolbox|assistant|prototype]"
+    echo "Usage: $0 [preflight|provision|build|toolbox|migrate|analytics|assistant|deploy|verify|promote|rollback]" >&2
     exit 1
     ;;
 esac
-
-echo ""
-echo "✓ Deployment complete!"

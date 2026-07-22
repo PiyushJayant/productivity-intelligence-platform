@@ -23,3 +23,5 @@ toolbox-*
 # OS
 .DS_Store
 Thumbs.db
+.deploy-build-tag
+.coverage

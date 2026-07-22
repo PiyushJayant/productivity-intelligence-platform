@@ -30,3 +30,6 @@ toolbox-*
 README.md
 .env.example
 cleanup/
+submission_assets/
+tests/
+.github/

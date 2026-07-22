@@ -6,10 +6,24 @@ notes, or calendar actions when the AlloyDB-backed MCP toolbox is unavailable.
 """
 from google.adk.agents import LlmAgent
 
+from productivity_assistant.config import settings
+from productivity_assistant.model_config import gemini_generate_content_config
+from productivity_assistant.status import capabilities
 from productivity_assistant.sub_agents.analytics_agent import analytics_agent
-from productivity_assistant.sub_agents.calendar_agent import calendar_agent
-from productivity_assistant.sub_agents.notes_agent import notes_agent
-from productivity_assistant.sub_agents.task_agent import task_agent
+
+EXPECTED_AGENTS = (
+    {"analytics_agent"}
+    if settings.app_mode == "prototype"
+    else {"task_agent", "notes_agent", "calendar_agent", "analytics_agent"}
+)
+capabilities.configure(EXPECTED_AGENTS)
+
+if settings.app_mode == "full":
+    from productivity_assistant.sub_agents.calendar_agent import calendar_agent
+    from productivity_assistant.sub_agents.notes_agent import notes_agent
+    from productivity_assistant.sub_agents.task_agent import task_agent
+else:
+    task_agent = notes_agent = calendar_agent = None
 
 
 AVAILABLE_AGENTS = [
@@ -95,7 +109,8 @@ capabilities that are actually available."""
 
 
 root_agent = LlmAgent(
-    model="gemini-2.5-flash",
+    model=settings.model,
+    generate_content_config=gemini_generate_content_config(),
     name="productivity_assistant",
     description=_build_description(),
     instruction=_build_instruction(),

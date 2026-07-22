@@ -1,8 +1,8 @@
-FROM us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:latest
+FROM us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.23.0@sha256:fbd9e4898456d68f0ea0069c17bbc2ed1eb7d8467671b625c129036f3a8f4717
 
 # Bundle this repository's toolbox configuration into the toolbox image.
 COPY mcp_toolbox/tools.yaml /app/tools.yaml
 
 EXPOSE 5000
 
-CMD ["--tools-file=/app/tools.yaml"]
+CMD ["--tools-file=/app/tools.yaml", "--address=0.0.0.0", "--port=5000"]

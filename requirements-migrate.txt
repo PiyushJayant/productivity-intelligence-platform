@@ -1,0 +1,1 @@
+google-cloud-alloydb-connector[pg8000]==1.13.1

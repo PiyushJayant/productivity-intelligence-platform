@@ -1,310 +1,208 @@
 # Multi-Agent Productivity Assistant
 
-### Hack2Skill x GCP Hackathon - Multi-Track Submission
+A Google ADK hackathon demo for shared synthetic tasks, notes, calendar events,
+semantic note search, and live productivity analytics on Google Cloud.
 
-A production-ready multi-agent AI system that manages tasks, notes, calendar events,
-and productivity analytics - built entirely on Google Cloud.
-
----
+> This is a public demonstration application. Do not enter personal,
+> confidential, regulated, or production data. The assistant endpoint is public
+> for judging; its MCP Toolbox data plane is protected by Cloud Run IAM.
 
 ## Architecture
 
-```
-User Request
-    |
-    v
-root_agent  (Coordinator - Gemini 2.5 Flash, LlmAgent)
-    |
-    |-- task_agent      --> MCP Toolbox --> AlloyDB  (tasks table)
-    |
-    |-- notes_agent     --> MCP Toolbox --> AlloyDB  (notes + VECTOR embeddings)
-    |                                        +-- text-embedding-005 via AlloyDB AI
-    |
-    |-- calendar_agent  --> MCP Toolbox --> AlloyDB  (events table)
-    |
-    +-- analytics_agent --> BigQuery MCP --> BigQuery (productivity_analytics)
-                            (Google-hosted,
-                             StreamableHTTP)
-```
-
----
-
-## GCP Services Used (All Three Tracks)
-
-| Track | Service | Role |
-|-------|---------|------|
-| Track 1 | **Google ADK** | Agent framework - `LlmAgent`, multi-agent routing |
-| Track 1 | **Gemini 2.5 Flash** | LLM for all agents via Vertex AI |
-| Track 1 | **Cloud Run** | Serverless deployment of the ADK app |
-| Track 1 | **Vertex AI** | Model inference backend (`GOOGLE_GENAI_USE_VERTEXAI=true`) |
-| Track 2 | **MCP Toolbox for Databases** | Exposes AlloyDB tools to ADK agents via MCP |
-| Track 2 | **BigQuery MCP Server** | Google-hosted remote MCP for analytics queries |
-| Track 3 | **AlloyDB for PostgreSQL** | Primary data store (tasks, notes, events) |
-| Track 3 | **AlloyDB AI** | `embedding('text-embedding-005', ...)` for vector embeddings |
-| Track 3 | **pgvector / ScaNN** | Semantic similarity search on notes |
-| Track 3 | **BigQuery** | Analytics data warehouse (`productivity_analytics`) |
-
----
-
-## Project Structure
-
-```
-hackhathon/
-|-- main.py                           # FastAPI entrypoint (ADK get_fast_api_app)
-|-- requirements.txt                  # Python dependencies
-|-- Dockerfile                        # Container image for Cloud Run (python:3.11-slim)
-|-- Dockerfile.toolbox                # Container for MCP Toolbox service
-|-- Procfile                          # Buildpacks entrypoint (fallback)
-|-- cloudbuild.toolbox.yaml           # Cloud Build config for toolbox image
-|-- .env.example                      # Environment variables template
-|-- .gcloudignore                     # Files excluded from Cloud Build uploads
-|-- .gitignore                        # Files excluded from git
-|
-|-- productivity_assistant/           # ADK agent package
-|   |-- __init__.py                   # Package entry point
-|   |-- agent.py                      # root_agent (coordinator)
-|   |-- tools.py                      # Shared MCP helpers (Toolbox + BigQuery)
-|   +-- sub_agents/
-|       |-- __init__.py
-|       |-- task_agent.py             # AlloyDB task CRUD via MCP Toolbox
-|       |-- notes_agent.py            # AlloyDB notes + semantic search via MCP Toolbox
-|       |-- calendar_agent.py         # AlloyDB calendar events via MCP Toolbox
-|       +-- analytics_agent.py        # BigQuery MCP (Google-hosted, StreamableHTTP)
-|
-|-- mcp_toolbox/
-|   +-- tools.yaml                    # MCP Toolbox config: AlloyDB source + 11 SQL tools
-|
-|-- setup/
-|   |-- setup.sh                      # One-step setup: .env + IAM roles + API enablement
-|   |-- deploy.sh                     # Unified deploy: --mode full|toolbox|assistant|prototype
-|   |-- create_alloydb.sh             # Create AlloyDB cluster + instance
-|   |-- apply_schema.sh               # Apply SQL schema via AlloyDB Auth Proxy
-|   |-- alloydb_schema.sql            # Tables, extensions, pgvector + ScaNN index
-|   |-- setup_bigquery.sh             # Wrapper to run bigquery_setup.py
-|   |-- bigquery_setup.py             # Creates BigQuery dataset + tables + seed data
-|   +-- start_toolbox_local.sh        # Download + run MCP Toolbox binary locally
-|
-+-- cleanup/
-    |-- cleanup_env.sh                # Remove .env + optionally disable APIs
-    +-- cleanup_bigquery.sh           # Delete productivity_analytics dataset
+```text
+Public user
+   |
+   v
+Cloud Run: productivity-assistant (public, assistant service identity)
+   |-- task / notes / calendar agents
+   |      |  Cloud Run ID token
+   |      v
+   |   Cloud Run: mcp-toolbox (IAM protected, toolbox identity)
+   |      |  Direct VPC egress
+   |      v
+   |   AlloyDB: tasks, notes, events, vector embeddings
+   |
+   +-- analytics agent -> hosted BigQuery MCP (read-only tools)
+                              |
+                              v
+                         BigQuery live views
+                              |
+                              v
+                         EXTERNAL_QUERY -> AlloyDB
 ```
 
----
+The deployment uses separate assistant, Toolbox, and migration service accounts.
+Database administrator, application, and analytics passwords are generated into
+Secret Manager and never stored in `.env` or Git.
 
-## Quick Start
+## Prerequisites
 
-### Prerequisites
+- A billing-enabled Google Cloud project. The checked-in default is
+  `cohort-1-track-1` in `us-central1`.
+- Owner-level setup permission, or equivalent granular permissions for IAM,
+  AlloyDB, Cloud Run, networking, Secret Manager, BigQuery, and Cloud Build.
+- `gcloud`, `bq`, `curl`, `openssl`, Git, Bash, and Python 3.11.
+- Active gcloud project must exactly match `GOOGLE_CLOUD_PROJECT`.
+- A billing budget and alert should be configured before creating AlloyDB.
 
 ```bash
-# Authenticate and set project
+gcloud auth login
 gcloud auth application-default login
-gcloud config set project YOUR_PROJECT_ID
+gcloud config set project cohort-1-track-1
+cp .env.example .env
+```
 
-# Create Python virtual environment
-python3 -m venv .venv
+`.env` contains identifiers and non-secret settings only. The deployment rejects
+the obsolete `cohort-1-hackhathon` project and stops when billing is disabled.
+
+## Local validation
+
+```bash
+python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+ruff check .
+mypy main.py productivity_assistant setup/bigquery_setup.py setup/migrate.py
+pytest
+pip-audit -r requirements.txt
 ```
 
-### Option 1: Full Setup (All Agents)
+Docker validation:
 
 ```bash
-# 1. Setup environment + IAM
-./setup/setup.sh all
-
-# 2. Create AlloyDB cluster (skip if using existing codelab cluster)
-./setup/create_alloydb.sh
-
-# 3. Apply schema (via AlloyDB Studio or Auth Proxy)
-#    Option A: AlloyDB Studio (recommended for private IP)
-#      - Go to: https://console.cloud.google.com/alloydb
-#      - Open AlloyDB Studio for your instance
-#      - Paste contents of setup/alloydb_schema.sql
-#    Option B: Auth Proxy (requires VPC routing)
-#      ./setup/apply_schema.sh
-
-# 4. Setup BigQuery analytics
-./setup/setup_bigquery.sh
-
-# 5. Deploy everything to Cloud Run
-./setup/deploy.sh --mode full
+docker build -t productivity-assistant:test .
+docker build -f Dockerfile.toolbox -t productivity-toolbox:test .
+docker build -f Dockerfile.migrate -t productivity-migrate:test .
 ```
 
-### Option 2: Prototype Mode (Analytics Agent Only)
+For local agent development, start Toolbox first and then run `adk web .`.
+Private AlloyDB requires a reachable VPC path; local Toolbox is not expected to
+reach a private instance from an ordinary workstation.
 
-No AlloyDB or MCP Toolbox required. Deploys only the BigQuery analytics agent:
+## Deployment
+
+The deployment workflow is idempotent, creates a project-scoped ₹5,000 monthly
+budget with 50%, 90%, and 100% thresholds, and supports individual phases:
 
 ```bash
-# 1. Setup environment + IAM
-./setup/setup.sh all
-
-# 2. Setup BigQuery analytics
-./setup/setup_bigquery.sh
-
-# 3. Deploy in prototype mode
-./setup/deploy.sh --mode prototype
+./setup/deploy.sh preflight
+./setup/deploy.sh provision
+./setup/deploy.sh build
+./setup/deploy.sh migrate
+./setup/deploy.sh deploy
+./setup/deploy.sh verify
+./setup/deploy.sh promote
+./setup/monitoring.sh
 ```
 
----
-
-## Local Development
-
-Run the toolbox and ADK in two terminals:
-
-**Terminal 1: Start MCP Toolbox (binary)**
+Run the complete workflow with:
 
 ```bash
-cd ~/hackhathon
-source .venv/bin/activate
-set -a; source .env; set +a
-./setup/start_toolbox_local.sh
+./setup/deploy.sh full
 ```
 
-Downloads toolbox v0.23.0 automatically and runs on http://localhost:5000.
-
-> **Note:** Local toolbox requires VPC routing to private AlloyDB. If using Cloud Shell
-> with private AlloyDB, deploy to Cloud Run instead (`./setup/deploy.sh --mode full`).
-
-**Terminal 2: Start ADK Web UI**
+To insert shared synthetic demonstration records during migration:
 
 ```bash
-cd ~/hackhathon
-source .venv/bin/activate
-set -a; source .env; set +a
-adk web
+SEED_DEMO=true ./setup/deploy.sh full
 ```
 
-Opens http://localhost:8000 with all agents:
-- **Task Agent**: Create, update, delete, list tasks (AlloyDB)
-- **Notes Agent**: Semantic search + CRUD with AI embeddings (AlloyDB + text-embedding-005)
-- **Calendar Agent**: Schedule, list, delete events (AlloyDB)
-- **Analytics Agent**: Productivity stats and trends (BigQuery)
+The full workflow:
 
----
+1. Verifies project access, billing, active project, configuration, and tools.
+2. Enables required APIs and creates least-privilege service identities.
+3. Creates Secret Manager credentials, a custom VPC/subnet, private-services
+   peering, Artifact Registry, and AlloyDB.
+4. Builds immutable assistant, Toolbox, and migration images.
+5. Runs the schema migration and embedding smoke test as a Cloud Run Job.
+6. Deploys IAM-protected Toolbox with Direct VPC egress.
+7. Creates an encrypted AlloyDB federation connection and live BigQuery views.
+8. Deploys an assistant candidate revision with no traffic.
+9. Verifies Toolbox authentication, hosted liveness, and `/readyz`.
+10. Promotes the verified candidate to 100% traffic.
 
-## Deployment to Cloud Run
+For a destructive synthetic-only deployment smoke test that cleans up after
+itself, run `setup/smoke_test.py` with the deployed Toolbox URL and assistant
+service account.
 
-The unified `deploy.sh` script handles all deployment modes:
+Rollback requires an explicit prior revision:
 
 ```bash
-# Deploy everything (toolbox + assistant with VPC connector)
-./setup/deploy.sh --mode full
-
-# Deploy only the MCP Toolbox service
-./setup/deploy.sh --mode toolbox
-
-# Deploy only the assistant (requires toolbox already running)
-./setup/deploy.sh --mode assistant
-
-# Deploy analytics-only prototype (no AlloyDB needed)
-./setup/deploy.sh --mode prototype
+./setup/deploy.sh rollback productivity-assistant-00001-abc
 ```
 
-### What the script does:
+## Runtime modes and endpoints
 
-1. Enables required GCP APIs
-2. Loads environment from `.env`
-3. For `full` / `toolbox` modes:
-   - Creates Artifact Registry repo
-   - Creates VPC connector for private AlloyDB
-   - Builds and deploys MCP Toolbox to Cloud Run
-4. For `full` / `assistant` / `prototype` modes:
-   - Deploys ADK app via Dockerfile
-   - Sets `GOOGLE_GENAI_USE_VERTEXAI=true` for Vertex AI
-   - Sets `GOOGLE_CLOUD_LOCATION=us-central1` for regional endpoint
-   - Prints the Cloud Run URL
+- `APP_MODE=full`: requires task, notes, calendar, and analytics agents.
+- `APP_MODE=prototype`: loads only analytics.
+- `PROTOTYPE_MODE=true` remains a deprecated compatibility alias.
+- `MODEL` controls every agent model and defaults to `gemini-2.5-flash`.
+- `GOOGLE_CLOUD_LOCATION` controls only Vertex AI inference and defaults to
+  `global`; deployment resources remain in `REGION=us-central1`. The global
+  endpoint spreads pay-as-you-go Gemini traffic across available capacity.
+- Every agent retries transient Vertex AI 429 and 5xx responses up to five
+  attempts with capped exponential backoff and jitter.
 
-### Manual deployment (if needed):
+Operational endpoints:
+
+- `/healthz`: process liveness; does not reveal dependency or credential errors.
+- `/readyz`: returns expected, loaded, and missing agent names; responds with 503
+  until every agent required by the selected mode is available.
+
+Cloud Run's Google Front End reserves the exact public `/healthz` path and
+returns 404 before it reaches the container. The verifier and uptime check use
+ADK's equivalent hosted `/health` route; `/healthz` remains available inside the
+container and on platforms that do not reserve it.
+
+`setup/monitoring.sh` idempotently configures public liveness, Cloud Run 5xx and
+p95 latency alerts, an AlloyDB connection high-water alert, and categorized log
+metrics for startup, Toolbox authorization, MCP, and BigQuery failures.
+
+See `SECURITY.md` for the narrow Starlette advisory exceptions imposed by the
+ADK 1.36.1/FastAPI dependency constraint.
+
+Only `productivity_assistant` is packaged in the deployed ADK agents directory.
+
+## Data and analytics
+
+AlloyDB stores typed task, note, and event records. Task status changes maintain
+`updated_at` and `completed_at`, allowing completion analytics to reflect actual
+operations. Notes use `google_ml.embedding('text-embedding-005', ...)` and exact
+cosine search for the small demo dataset.
+
+Automatic ScaNN index creation is intentionally disabled for an empty/small
+database. After at least 10,000 embedded notes, apply
+`setup/create_scann_index.sql` to create the idempotent manually tuned index.
+
+BigQuery views `productivity_analytics.task_summary` and
+`productivity_analytics.daily_activity` use `EXTERNAL_QUERY` through the
+`productivity_alloydb` connection. The analytics agent receives only metadata
+and read-only SQL MCP tools; there is no recurring seed or duplicate ingestion.
+
+## Security notes
+
+- Toolbox is never deployed with unauthenticated invocation.
+- The assistant supplies a refreshable Google-signed ID token to Toolbox.
+- Hosted BigQuery MCP access tokens refresh through ADC and the runtime service
+  identity has MCP Tool User plus read-only BigQuery permissions.
+- Secret Manager versions are resolved numerically at deployment.
+- Runtime identities do not receive Cloud Build, Artifact Registry admin, or
+  broad Storage Admin permissions.
+- Delete requests require explicit conversational confirmation.
+- This demo has a shared synthetic datastore and does not provide tenant-level
+  isolation.
+
+## Cleanup and cost control
+
+AlloyDB and Cloud Run can incur charges. Configure a project budget and remove
+the demo when judging is complete:
 
 ```bash
-gcloud run deploy productivity-assistant \
-  --source . \
-  --region us-central1 \
-  --set-env-vars "PROTOTYPE_MODE=true,GOOGLE_CLOUD_PROJECT=YOUR_PROJECT,GOOGLE_CLOUD_LOCATION=us-central1,GOOGLE_GENAI_USE_VERTEXAI=true" \
-  --allow-unauthenticated \
-  --memory 1Gi \
-  --timeout 300 \
-  --clear-base-image
+./cleanup/cleanup_all.sh
 ```
 
----
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `GOOGLE_CLOUD_PROJECT` | GCP project ID | Required |
-| `GOOGLE_CLOUD_LOCATION` | Vertex AI region | `us-central1` |
-| `GOOGLE_GENAI_USE_VERTEXAI` | Use Vertex AI instead of Gemini API key | `true` |
-| `MODEL` | Gemini model name | `gemini-2.5-flash` |
-| `PROTOTYPE_MODE` | Skip AlloyDB agents, analytics only | `false` |
-| `TOOLBOX_URL` | MCP Toolbox server URL | `http://127.0.0.1:5000` |
-| `ALLOYDB_REGION` | AlloyDB cluster region | `us-central1` |
-| `ALLOYDB_CLUSTER` | AlloyDB cluster name | `productivity-cluster` |
-| `ALLOYDB_INSTANCE` | AlloyDB instance name | `productivity-instance` |
-| `ALLOYDB_DATABASE` | Database name | `postgres` |
-| `ALLOYDB_USER` | Database user | `postgres` |
-| `ALLOYDB_PASSWORD` | Database password | Required |
-| `ALLOYDB_IP_TYPE` | AlloyDB IP type | `private` |
-| `VPC_CONNECTOR` | VPC connector name | `toolbox-vpc-connector` |
-| `VPC_NETWORK` | VPC network name | `easy-alloydb-vpc` |
-
-Copy `.env.example` to `.env` and fill in your values, or run `./setup/setup.sh env` to generate it.
-
----
-
-## Example Conversations
-
-```
-User: Create a high-priority task to "Prepare hackathon demo" due 2026-04-10
-
-User: Add a note titled "Demo ideas" about "Use real-time streaming for live showcase"
-      tagged with hackathon,ideas
-
-User: Find notes related to "presentation" (semantic search via AlloyDB AI)
-
-User: Schedule a team sync for 2026-04-09 at 14:00 for 45 minutes
-
-User: How was my task completion rate this week?  (BigQuery analytics)
-
-User: Create a task for the review, note the feedback points, and schedule a follow-up
-      (multi-step: routes to task_agent -> notes_agent -> calendar_agent)
-```
-
----
-
-## Cleanup
-
-```bash
-# Delete BigQuery dataset
-./cleanup/cleanup_bigquery.sh
-
-# Remove .env and optionally disable APIs
-./cleanup/cleanup_env.sh
-```
-
----
-
-## Key Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| **MCP Toolbox for AlloyDB** | Separates AI reasoning from data access; clean declarative SQL in `tools.yaml` (Track 2 codelab pattern) |
-| **Google-hosted BigQuery MCP** | Uses `StreamableHTTPConnectionParams` + OAuth ADC - same pattern as Location Intelligence codelab |
-| **AlloyDB AI embeddings** | `embedding('text-embedding-005', ...)` called inside SQL - in-database intelligence (Track 3 codelab pattern) |
-| **ScaNN index on notes** | Scalable nearest-neighbour search as taught in AlloyDB Quick Setup codelab |
-| **LLM-driven routing** | ADK's built-in sub-agent transfer via `description` fields - no manual routing code |
-| **Vertex AI backend** | `GOOGLE_GENAI_USE_VERTEXAI=true` - enterprise-grade inference on Cloud Run via ADC |
-| **Prototype mode** | `PROTOTYPE_MODE=true` deploys analytics-only, bypassing AlloyDB for quick demos |
-| **Dockerfile deployment** | Consistent builds with `python:3.11-slim`, avoids Buildpack conflicts |
-
----
-
-## Codelabs Referenced
-
-1. [Build a Multi-Agent Application with Google ADK](https://codelabs.developers.google.com/adk-multi-agent)
-2. [Build Agentic Applications with Vertex AI and ADK](https://codelabs.developers.google.com/vertex-ai-adk)
-3. [MCP Toolbox for Databases with AlloyDB](https://codelabs.developers.google.com/mcp-toolbox-alloydb)
-4. [MCP Toolbox for Databases with BigQuery](https://codelabs.developers.google.com/mcp-toolbox-bigquery)
-5. [AlloyDB Quick Setup](https://codelabs.developers.google.com/quick-alloydb-setup)
-6. [AlloyDB AI + LangChain RAG](https://codelabs.developers.google.com/alloydb-ai-langchain)
+The cleanup script prints every target and requires typing the exact project ID.
+It removes the two services, migration job, dataset/connection, AlloyDB cluster,
+images, secrets, peering, subnet, and VPC. Cloud resource deletion is not
+recoverable.

@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+.env
+.env.*
+!.env.example
+mcp
+cleanup
+submission_assets
+tests
+README.md
