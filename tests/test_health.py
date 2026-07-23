@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 import main
-from productivity_assistant.status import capabilities
+from productivity_intelligence.status import capabilities
 
 
 def test_health_endpoint_contains_no_dependency_details():

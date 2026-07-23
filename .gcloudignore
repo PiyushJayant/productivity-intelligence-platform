@@ -11,10 +11,6 @@ __pycache__/
 # Secrets
 .env
 
-# External repos (not our code)
-mcp/
-devrel-demos/
-
 # Binaries
 alloydb-auth-proxy
 toolbox-*
@@ -30,6 +26,13 @@ toolbox-*
 README.md
 .env.example
 cleanup/
-submission_assets/
 tests/
 .github/
+SECURITY.md
+pyproject.toml
+requirements-dev.txt
+requirements-setup.txt
+setup/*
+!setup/migrate.py
+!setup/alloydb_schema.sql
+!setup/seed_demo.sql

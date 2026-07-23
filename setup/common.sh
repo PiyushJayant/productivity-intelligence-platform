@@ -24,15 +24,15 @@ if [[ -f "${REPO_ROOT}/.env" ]]; then
   set +a
 fi
 
-PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-cohort-1-track-1}"
+PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-}"
 REGION="${REGION:-us-central1}"
 VERTEX_LOCATION="${GOOGLE_CLOUD_LOCATION:-global}"
 MODEL="${MODEL:-gemini-2.5-flash}"
 APP_MODE="${APP_MODE:-full}"
-ASSISTANT_SERVICE_NAME="${ASSISTANT_SERVICE_NAME:-productivity-assistant}"
-TOOLBOX_SERVICE_NAME="${TOOLBOX_SERVICE_NAME:-mcp-toolbox}"
+ASSISTANT_SERVICE_NAME="${ASSISTANT_SERVICE_NAME:-productivity-intelligence}"
+TOOLBOX_SERVICE_NAME="${TOOLBOX_SERVICE_NAME:-productivity-toolbox}"
 MIGRATION_JOB_NAME="${MIGRATION_JOB_NAME:-productivity-migrate}"
-AR_REPO="${AR_REPO:-productivity-services}"
+AR_REPO="${AR_REPO:-productivity-platform}"
 VPC_NETWORK="${VPC_NETWORK:-productivity-vpc}"
 VPC_SUBNET="${VPC_SUBNET:-productivity-us-central1}"
 VPC_SUBNET_RANGE="${VPC_SUBNET_RANGE:-10.20.0.0/24}"
@@ -40,22 +40,24 @@ PSA_RANGE_NAME="${PSA_RANGE_NAME:-productivity-private-services}"
 ALLOYDB_REGION="${ALLOYDB_REGION:-${REGION}}"
 ALLOYDB_CLUSTER="${ALLOYDB_CLUSTER:-productivity-cluster}"
 ALLOYDB_INSTANCE="${ALLOYDB_INSTANCE:-productivity-instance}"
-ALLOYDB_DATABASE="${ALLOYDB_DATABASE:-postgres}"
+ALLOYDB_AVAILABILITY_TYPE="${ALLOYDB_AVAILABILITY_TYPE:-ZONAL}"
+ALLOYDB_DATABASE="${ALLOYDB_DATABASE:-productivity_platform}"
 ADMIN_DB_USER="${ADMIN_DB_USER:-postgres}"
 ALLOYDB_USER="${ALLOYDB_USER:-productivity_app}"
 ANALYTICS_DB_USER="${ANALYTICS_DB_USER:-productivity_analytics}"
 BIGQUERY_CONNECTION_ID="${BIGQUERY_CONNECTION_ID:-productivity_alloydb}"
-ASSISTANT_SA_NAME="${ASSISTANT_SA_NAME:-productivity-assistant}"
+ASSISTANT_SA_NAME="${ASSISTANT_SA_NAME:-productivity-intelligence}"
 TOOLBOX_SA_NAME="${TOOLBOX_SA_NAME:-productivity-toolbox}"
 MIGRATION_SA_NAME="${MIGRATION_SA_NAME:-productivity-migrate}"
 ASSISTANT_SA="${ASSISTANT_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 TOOLBOX_SA="${TOOLBOX_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 MIGRATION_SA="${MIGRATION_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-ADMIN_DB_SECRET="${ADMIN_DB_SECRET:-alloydb-admin-password}"
-APP_DB_SECRET="${APP_DB_SECRET:-alloydb-app-password}"
-ANALYTICS_DB_SECRET="${ANALYTICS_DB_SECRET:-alloydb-analytics-password}"
+ADMIN_DB_SECRET="${ADMIN_DB_SECRET:-productivity-db-admin-password}"
+APP_DB_SECRET="${APP_DB_SECRET:-productivity-db-app-password}"
+ANALYTICS_DB_SECRET="${ANALYTICS_DB_SECRET:-productivity-db-analytics-password}"
 BUDGET_AMOUNT="${BUDGET_AMOUNT:-5000INR}"
-BUDGET_NAME="${BUDGET_NAME:-Productivity Assistant Hackathon Budget}"
+BUDGET_NAME="${BUDGET_NAME:-Productivity Intelligence Platform Budget}"
+CLOUD_RUN_MAX_INSTANCES="${CLOUD_RUN_MAX_INSTANCES:-3}"
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -69,12 +71,20 @@ preflight() {
   require_command "${BQ_BIN}"
   require_command curl
 
-  [[ "${PROJECT_ID}" != *"your-project"* && "${PROJECT_ID}" != "cohort-1-hackhathon" ]] || {
-    echo "Error: GOOGLE_CLOUD_PROJECT is a placeholder or obsolete project." >&2
+  [[ -n "${PROJECT_ID}" && "${PROJECT_ID}" != *"your-project"* ]] || {
+    echo "Error: set GOOGLE_CLOUD_PROJECT to a real billing-enabled project ID." >&2
     exit 1
   }
   [[ "${APP_MODE}" == "full" || "${APP_MODE}" == "prototype" ]] || {
     echo "Error: APP_MODE must be full or prototype." >&2
+    exit 1
+  }
+  [[ "${ALLOYDB_AVAILABILITY_TYPE}" == "ZONAL" || "${ALLOYDB_AVAILABILITY_TYPE}" == "REGIONAL" ]] || {
+    echo "Error: ALLOYDB_AVAILABILITY_TYPE must be ZONAL or REGIONAL." >&2
+    exit 1
+  }
+  [[ "${CLOUD_RUN_MAX_INSTANCES}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Error: CLOUD_RUN_MAX_INSTANCES must be a positive integer." >&2
     exit 1
   }
 

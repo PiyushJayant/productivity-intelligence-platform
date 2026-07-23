@@ -1,4 +1,4 @@
-from productivity_assistant.model_config import gemini_generate_content_config
+from productivity_intelligence.model_config import gemini_generate_content_config
 
 
 def test_gemini_retries_transient_vertex_failures():

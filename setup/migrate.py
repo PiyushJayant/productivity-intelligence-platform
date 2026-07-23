@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from google.cloud.alloydb.connector import Connector, IPTypes
@@ -19,14 +20,38 @@ def quote_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def quote_identifier(value: str) -> str:
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", value):
+        raise ValueError("ALLOYDB_DATABASE must be a lowercase PostgreSQL identifier")
+    return f'"{value}"'
+
+
 def main() -> None:
     instance_uri = required("ALLOYDB_INSTANCE_URI")
-    database = os.getenv("ALLOYDB_DATABASE", "postgres")
+    database = os.getenv("ALLOYDB_DATABASE", "productivity_platform")
     admin_password = required("ADMIN_DB_PASSWORD")
     app_password = required("APP_DB_PASSWORD")
     analytics_password = required("ANALYTICS_DB_PASSWORD")
 
     connector = Connector()
+    if database != "postgres":
+        bootstrap = connector.connect(
+            instance_uri,
+            "pg8000",
+            user="postgres",
+            password=admin_password,
+            db="postgres",
+            ip_type=IPTypes.PRIVATE,
+        )
+        try:
+            bootstrap.autocommit = True
+            cursor = bootstrap.cursor()
+            cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,))
+            if cursor.fetchone() is None:
+                cursor.execute(f"CREATE DATABASE {quote_identifier(database)}")
+        finally:
+            bootstrap.close()
+
     connection = connector.connect(
         instance_uri,
         "pg8000",
@@ -54,7 +79,7 @@ def main() -> None:
         dimensions = cursor.fetchone()[0]
         if dimensions != 768:
             raise RuntimeError(f"Unexpected embedding dimension: {dimensions}")
-        print("[OK] AlloyDB migration and embedding smoke test passed")
+        print("[OK] Productivity Intelligence database migration passed")
     finally:
         connection.close()
         connector.close()

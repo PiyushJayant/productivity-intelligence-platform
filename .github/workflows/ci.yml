@@ -18,7 +18,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
-      - run: mypy main.py productivity_assistant setup/bigquery_setup.py setup/migrate.py
+      - run: mypy main.py productivity_intelligence setup/bigquery_setup.py setup/migrate.py
       - run: pytest
       - name: Dependency vulnerability scan
         # ADK 1.36.1 requires FastAPI <1, which requires Starlette <0.53.
@@ -36,6 +36,6 @@ jobs:
           scandir: './setup ./cleanup'
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
-      - run: docker build -t productivity-assistant:test .
+      - run: docker build -t productivity-intelligence:test .
       - run: docker build -f Dockerfile.toolbox -t productivity-toolbox:test .
       - run: docker build -f Dockerfile.migrate -t productivity-migrate:test .

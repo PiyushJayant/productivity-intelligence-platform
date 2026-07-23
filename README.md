@@ -1,7 +1,7 @@
-# Multi-Agent Productivity Assistant
+# Productivity Intelligence Platform
 
-A Google ADK hackathon demo for shared synthetic tasks, notes, calendar events,
-semantic note search, and live productivity analytics on Google Cloud.
+A secure Google ADK work-orchestration platform for shared synthetic tasks,
+semantic knowledge, calendar events, and live productivity analytics on Google Cloud.
 
 > This is a public demonstration application. Do not enter personal,
 > confidential, regulated, or production data. The assistant endpoint is public
@@ -13,11 +13,11 @@ semantic note search, and live productivity analytics on Google Cloud.
 Public user
    |
    v
-Cloud Run: productivity-assistant (public, assistant service identity)
+Cloud Run: productivity-intelligence (public, orchestration identity)
    |-- task / notes / calendar agents
    |      |  Cloud Run ID token
    |      v
-   |   Cloud Run: mcp-toolbox (IAM protected, toolbox identity)
+   |   Cloud Run: productivity-toolbox (IAM protected, toolbox identity)
    |      |  Direct VPC egress
    |      v
    |   AlloyDB: tasks, notes, events, vector embeddings
@@ -37,8 +37,8 @@ Secret Manager and never stored in `.env` or Git.
 
 ## Prerequisites
 
-- A billing-enabled Google Cloud project. The checked-in default is
-  `cohort-1-track-1` in `us-central1`.
+- A billing-enabled Google Cloud project in which you can create IAM, AlloyDB,
+  Cloud Run, networking, Secret Manager, BigQuery, and Cloud Build resources.
 - Owner-level setup permission, or equivalent granular permissions for IAM,
   AlloyDB, Cloud Run, networking, Secret Manager, BigQuery, and Cloud Build.
 - `gcloud`, `bq`, `curl`, `openssl`, Git, Bash, and Python 3.11.
@@ -48,12 +48,13 @@ Secret Manager and never stored in `.env` or Git.
 ```bash
 gcloud auth login
 gcloud auth application-default login
-gcloud config set project cohort-1-track-1
 cp .env.example .env
+# Edit GOOGLE_CLOUD_PROJECT in .env, then activate the same project:
+gcloud config set project YOUR_PROJECT_ID
 ```
 
-`.env` contains identifiers and non-secret settings only. The deployment rejects
-the obsolete `cohort-1-hackhathon` project and stops when billing is disabled.
+`.env` contains identifiers and non-secret settings only. Deployment requires an
+explicit project ID and stops when the active project differs or billing is disabled.
 
 ## Local validation
 
@@ -63,7 +64,7 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 ruff check .
-mypy main.py productivity_assistant setup/bigquery_setup.py setup/migrate.py
+mypy main.py productivity_intelligence setup/bigquery_setup.py setup/migrate.py
 pytest
 pip-audit -r requirements.txt
 ```
@@ -71,7 +72,7 @@ pip-audit -r requirements.txt
 Docker validation:
 
 ```bash
-docker build -t productivity-assistant:test .
+docker build -t productivity-intelligence:test .
 docker build -f Dockerfile.toolbox -t productivity-toolbox:test .
 docker build -f Dockerfile.migrate -t productivity-migrate:test .
 ```
@@ -83,7 +84,11 @@ reach a private instance from an ordinary workstation.
 ## Deployment
 
 The deployment workflow is idempotent, creates a project-scoped ₹5,000 monthly
-budget with 50%, 90%, and 100% thresholds, and supports individual phases:
+budget with 50%, 90%, and 100% thresholds, and supports individual phases.
+Budget alerts do not cap spending. The cost-conscious default uses a single-node
+`ZONAL` AlloyDB instance and limits each Cloud Run service to three instances.
+Set `ALLOYDB_AVAILABILITY_TYPE=REGIONAL` only when production high availability
+is required and the additional always-on database cost is acceptable.
 
 ```bash
 ./setup/deploy.sh preflight
@@ -93,7 +98,6 @@ budget with 50%, 90%, and 100% thresholds, and supports individual phases:
 ./setup/deploy.sh deploy
 ./setup/deploy.sh verify
 ./setup/deploy.sh promote
-./setup/monitoring.sh
 ```
 
 Run the complete workflow with:
@@ -121,6 +125,7 @@ The full workflow:
 8. Deploys an assistant candidate revision with no traffic.
 9. Verifies Toolbox authentication, hosted liveness, and `/readyz`.
 10. Promotes the verified candidate to 100% traffic.
+11. Creates the uptime check, alert policies, and categorized log metrics.
 
 For a destructive synthetic-only deployment smoke test that cleans up after
 itself, run `setup/smoke_test.py` with the deployed Toolbox URL and assistant
@@ -129,14 +134,13 @@ service account.
 Rollback requires an explicit prior revision:
 
 ```bash
-./setup/deploy.sh rollback productivity-assistant-00001-abc
+./setup/deploy.sh rollback productivity-intelligence-00001-abc
 ```
 
 ## Runtime modes and endpoints
 
 - `APP_MODE=full`: requires task, notes, calendar, and analytics agents.
 - `APP_MODE=prototype`: loads only analytics.
-- `PROTOTYPE_MODE=true` remains a deprecated compatibility alias.
 - `MODEL` controls every agent model and defaults to `gemini-2.5-flash`.
 - `GOOGLE_CLOUD_LOCATION` controls only Vertex AI inference and defaults to
   `global`; deployment resources remain in `REGION=us-central1`. The global
@@ -162,7 +166,8 @@ metrics for startup, Toolbox authorization, MCP, and BigQuery failures.
 See `SECURITY.md` for the narrow Starlette advisory exceptions imposed by the
 ADK 1.36.1/FastAPI dependency constraint.
 
-Only `productivity_assistant` is packaged in the deployed ADK agents directory.
+Only `productivity_intelligence` is packaged in the deployed ADK agents directory,
+and its root agent is `productivity_orchestrator`.
 
 ## Data and analytics
 
@@ -171,9 +176,8 @@ AlloyDB stores typed task, note, and event records. Task status changes maintain
 operations. Notes use `google_ml.embedding('text-embedding-005', ...)` and exact
 cosine search for the small demo dataset.
 
-Automatic ScaNN index creation is intentionally disabled for an empty/small
-database. After at least 10,000 embedded notes, apply
-`setup/create_scann_index.sql` to create the idempotent manually tuned index.
+Semantic retrieval uses exact cosine search, which keeps the small shared demo
+database simple and avoids an unused approximate-index dependency.
 
 BigQuery views `productivity_analytics.task_summary` and
 `productivity_analytics.daily_activity` use `EXTERNAL_QUERY` through the
@@ -204,5 +208,6 @@ the demo when judging is complete:
 
 The cleanup script prints every target and requires typing the exact project ID.
 It removes the two services, migration job, dataset/connection, AlloyDB cluster,
-images, secrets, peering, subnet, and VPC. Cloud resource deletion is not
-recoverable.
+images, secrets, runtime service accounts, monitoring policies, uptime check,
+log metrics, project budget, peering, subnet, and VPC. Cloud resource deletion
+is not recoverable.

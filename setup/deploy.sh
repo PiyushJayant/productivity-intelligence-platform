@@ -13,11 +13,15 @@ if [[ -n "${BUILD_TAG:-}" ]]; then
   BUILD_TAG="${BUILD_TAG}"
 elif [[ "${ACTION}" == "build" || "${ACTION}" == "full" ]]; then
   BUILD_TAG="$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
-elif [[ -f "${BUILD_TAG_FILE}" ]]; then
-  BUILD_TAG="$(<"${BUILD_TAG_FILE}")"
+elif [[ "${ACTION}" =~ ^(toolbox|migrate|assistant|deploy)$ ]]; then
+  if [[ -f "${BUILD_TAG_FILE}" ]]; then
+    BUILD_TAG="$(<"${BUILD_TAG_FILE}")"
+  else
+    echo "Error: no successful build tag found. Run '$0 build' first." >&2
+    exit 1
+  fi
 else
-  echo "Error: no successful build tag found. Run '$0 build' first." >&2
-  exit 1
+  BUILD_TAG="not-required"
 fi
 IMAGE_ROOT="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}"
 ASSISTANT_IMAGE="${IMAGE_ROOT}/${ASSISTANT_SERVICE_NAME}:${BUILD_TAG}"
@@ -48,6 +52,7 @@ deploy_toolbox() {
   gcloud run deploy "${TOOLBOX_SERVICE_NAME}" --image="${TOOLBOX_IMAGE}" \
     --region="${REGION}" --project="${PROJECT_ID}" --platform=managed \
     --service-account="${TOOLBOX_SA}" --no-allow-unauthenticated --port=5000 \
+    --max-instances="${CLOUD_RUN_MAX_INSTANCES}" \
     --network="${VPC_NETWORK}" --subnet="${VPC_SUBNET}" \
     --vpc-egress=private-ranges-only \
     --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE},ALLOYDB_IP_TYPE=private,ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ALLOYDB_USER=${ALLOYDB_USER}" \
@@ -151,7 +156,8 @@ deploy_assistant() {
   gcloud run deploy "${ASSISTANT_SERVICE_NAME}" --image="${ASSISTANT_IMAGE}" \
     --region="${REGION}" --project="${PROJECT_ID}" --platform=managed \
     --service-account="${ASSISTANT_SA}" --allow-unauthenticated \
-    --memory=1Gi --timeout=300 "${traffic_args[@]}" \
+    --memory=1Gi --timeout=300 --max-instances="${CLOUD_RUN_MAX_INSTANCES}" \
+    "${traffic_args[@]}" \
     --set-env-vars="APP_MODE=${APP_MODE},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},GOOGLE_GENAI_USE_VERTEXAI=true,MODEL=${MODEL},TOOLBOX_URL=${toolbox_url},TOOLBOX_AUDIENCE=${toolbox_url},BIGQUERY_CONNECTION_ID=${BIGQUERY_CONNECTION_ID}"
 }
 
@@ -241,6 +247,7 @@ case "${ACTION}" in
     deploy_assistant
     verify_candidate
     promote
+    "${SCRIPT_DIR}/monitoring.sh"
     ;;
   *)
     echo "Usage: $0 [preflight|provision|build|toolbox|migrate|analytics|assistant|deploy|verify|promote|rollback]" >&2

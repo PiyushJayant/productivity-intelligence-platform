@@ -66,7 +66,7 @@ def verify_chat_tool_completion(assistant_url: str, marker: str) -> None:
     user_id = "deployment-smoke"
     session_id = f"session-{uuid.uuid4().hex[:10]}"
     session_url = (
-        f"{assistant_url.rstrip('/')}/apps/productivity_assistant/users/"
+        f"{assistant_url.rstrip('/')}/apps/productivity_intelligence/users/"
         f"{user_id}/sessions/{session_id}"
     )
     request_json(session_url, method="POST", payload={})
@@ -75,7 +75,7 @@ def verify_chat_tool_completion(assistant_url: str, marker: str) -> None:
             f"{assistant_url.rstrip('/')}/run",
             method="POST",
             payload={
-                "appName": "productivity_assistant",
+                "appName": "productivity_intelligence",
                 "userId": user_id,
                 "sessionId": session_id,
                 "newMessage": {

@@ -1,15 +1,9 @@
--- Idempotent AlloyDB schema and migration for the Productivity Assistant.
+-- Idempotent AlloyDB schema and migration for Productivity Intelligence Platform.
 -- Run as the database administrator. Application passwords are provisioned
 -- separately and are never embedded in this file.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS google_ml_integration;
-CREATE EXTENSION IF NOT EXISTS alloydb_scann CASCADE;
-
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version     TEXT PRIMARY KEY,
-    applied_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id            BIGSERIAL PRIMARY KEY,

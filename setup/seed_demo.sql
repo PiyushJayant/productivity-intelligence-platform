@@ -1,19 +1,19 @@
--- Optional idempotent synthetic records for hackathon demonstrations.
+-- Optional idempotent synthetic records for demonstrations.
 INSERT INTO tasks (title, description, priority, status, due_date)
-SELECT 'Prepare hackathon demo', 'Synthetic shared demo task', 'high', 'pending', CURRENT_DATE + 2
-WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE title = 'Prepare hackathon demo');
+SELECT 'Submit weekly report', 'Summarize completed work and next steps', 'high', 'pending', CURRENT_DATE + 2
+WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE title = 'Submit weekly report');
 
 INSERT INTO notes (title, content, tags, embedding)
 SELECT
-  'Demo ideas',
-  'Use live federated analytics and semantic note retrieval in the presentation.',
-  'hackathon,demo',
+  'Focus routine',
+  'Silence notifications, choose one important task, and work without interruptions for 45 minutes.',
+  'productivity,focus',
   google_ml.embedding(
     'text-embedding-005',
-    'Demo ideas Use live federated analytics and semantic note retrieval in the presentation.'
+    'Focus routine Silence notifications, choose one important task, and work without interruptions for 45 minutes.'
   )::vector
-WHERE NOT EXISTS (SELECT 1 FROM notes WHERE title = 'Demo ideas');
+WHERE NOT EXISTS (SELECT 1 FROM notes WHERE title = 'Focus routine');
 
 INSERT INTO events (title, date, time, duration_minutes, description)
-SELECT 'Demo rehearsal', CURRENT_DATE + 1, TIME '14:00', 45, 'Synthetic shared demo event'
-WHERE NOT EXISTS (SELECT 1 FROM events WHERE title = 'Demo rehearsal');
+SELECT 'Weekly planning session', CURRENT_DATE + 1, TIME '14:00', 30, 'Review priorities for the coming week'
+WHERE NOT EXISTS (SELECT 1 FROM events WHERE title = 'Weekly planning session');

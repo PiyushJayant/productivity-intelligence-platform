@@ -13,8 +13,8 @@ assistant_url="$(gcloud run services describe "${ASSISTANT_SERVICE_NAME}" \
 assistant_host="${assistant_url#https://}"
 
 if ! gcloud monitoring uptime list-configs --project="${PROJECT_ID}" \
-    --format='value(displayName)' | grep -Fxq 'Productivity Assistant hosted liveness'; then
-  gcloud monitoring uptime create 'Productivity Assistant hosted liveness' \
+    --format='value(displayName)' | grep -Fxq 'Productivity Intelligence hosted liveness'; then
+  gcloud monitoring uptime create 'Productivity Intelligence hosted liveness' \
     --project="${PROJECT_ID}" --resource-type=uptime-url \
     --resource-labels="host=${assistant_host},project_id=${PROJECT_ID}" \
     --protocol=https --path=/health --period=1 --timeout=10 --validate-ssl=true
@@ -31,21 +31,21 @@ create_threshold_policy() {
     --condition-filter="${filter}" --aggregation="${aggregation}" \
     --duration=300s --if="> ${threshold}" --trigger-count=1 \
     --combiner=OR \
-    --documentation="Hackathon deployment alert for ${PROJECT_ID}. Inspect service and dependency logs before rollback."
+    --documentation="Productivity Intelligence Platform alert for ${PROJECT_ID}. Inspect service and dependency logs before rollback."
 }
 
 create_threshold_policy \
-  'Productivity Assistant 5xx rate' 'Cloud Run 5xx responses' \
+  'Productivity Intelligence 5xx rate' 'Cloud Run 5xx responses' \
   "resource.type=\"cloud_run_revision\" AND resource.label.\"service_name\"=\"${ASSISTANT_SERVICE_NAME}\" AND metric.type=\"run.googleapis.com/request_count\" AND metric.label.\"response_code_class\"=\"5xx\"" \
   '{"alignmentPeriod":"300s","perSeriesAligner":"ALIGN_RATE","crossSeriesReducer":"REDUCE_SUM"}' 0
 
 create_threshold_policy \
-  'Productivity Assistant p95 latency' 'Cloud Run p95 latency above 2s' \
+  'Productivity Intelligence p95 latency' 'Cloud Run p95 latency above 2s' \
   "resource.type=\"cloud_run_revision\" AND resource.label.\"service_name\"=\"${ASSISTANT_SERVICE_NAME}\" AND metric.type=\"run.googleapis.com/request_latencies\"" \
   '{"alignmentPeriod":"300s","perSeriesAligner":"ALIGN_PERCENTILE_95","crossSeriesReducer":"REDUCE_MAX"}' 2000
 
 create_threshold_policy \
-  'Productivity AlloyDB connection high-water mark' 'AlloyDB connections above 80' \
+  'Productivity Intelligence AlloyDB connections' 'AlloyDB connections above 80' \
   'resource.type="alloydb.googleapis.com/Instance" AND metric.type="alloydb.googleapis.com/instance/postgres/total_connections"' \
   '{"alignmentPeriod":"300s","perSeriesAligner":"ALIGN_MAX","crossSeriesReducer":"REDUCE_MAX"}' 80
 

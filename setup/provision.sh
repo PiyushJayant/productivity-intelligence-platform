@@ -55,9 +55,9 @@ grant_project_role() {
     --condition=None --quiet >/dev/null
 }
 
-ensure_service_account "${ASSISTANT_SA_NAME}" "Productivity Assistant runtime"
-ensure_service_account "${TOOLBOX_SA_NAME}" "Productivity Toolbox runtime"
-ensure_service_account "${MIGRATION_SA_NAME}" "Productivity database migrations"
+ensure_service_account "${ASSISTANT_SA_NAME}" "Productivity Intelligence runtime"
+ensure_service_account "${TOOLBOX_SA_NAME}" "Productivity Intelligence Toolbox"
+ensure_service_account "${MIGRATION_SA_NAME}" "Productivity Intelligence migrations"
 DEPLOYER_ACCOUNT="$(gcloud config get-value account 2>/dev/null)"
 if [[ "${DEPLOYER_ACCOUNT}" == *".gserviceaccount.com" ]]; then
   DEPLOYER_MEMBER="serviceAccount:${DEPLOYER_ACCOUNT}"
@@ -123,7 +123,7 @@ fi
 if ! gcloud artifacts repositories describe "${AR_REPO}" --location="${REGION}" \
     --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud artifacts repositories create "${AR_REPO}" --repository-format=docker \
-    --location="${REGION}" --description="Productivity Assistant images" \
+    --location="${REGION}" --description="Productivity Intelligence Platform images" \
     --project="${PROJECT_ID}"
 fi
 
@@ -148,7 +148,18 @@ if ! gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
     --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud alloydb instances create "${ALLOYDB_INSTANCE}" \
     --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" --instance-type=PRIMARY \
-    --cpu-count=2 --project="${PROJECT_ID}"
+    --availability-type="${ALLOYDB_AVAILABILITY_TYPE}" --cpu-count=2 \
+    --project="${PROJECT_ID}"
+else
+  current_availability="$(gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
+    --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" --project="${PROJECT_ID}" \
+    --format='value(availabilityType)')"
+  if [[ "${current_availability}" != "${ALLOYDB_AVAILABILITY_TYPE}" ]]; then
+    gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --availability-type="${ALLOYDB_AVAILABILITY_TYPE}" --project="${PROJECT_ID}" \
+      --quiet
+  fi
 fi
 
 echo "[OK] Infrastructure provisioned in ${PROJECT_ID}/${REGION}"

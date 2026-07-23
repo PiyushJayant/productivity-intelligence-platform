@@ -1,4 +1,4 @@
-from productivity_assistant.status import CapabilityRegistry
+from productivity_intelligence.status import CapabilityRegistry
 
 
 def test_registry_reports_missing_agents_without_internal_errors():

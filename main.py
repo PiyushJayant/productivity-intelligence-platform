@@ -16,13 +16,13 @@ if AGENTS_DIR not in sys.path:
 
 # Force capability discovery during process startup. ADK otherwise imports an
 # agent lazily on the first conversational request, making readiness vacuous.
-from productivity_assistant.agent import root_agent as _root_agent  # noqa: E402,F401
-from productivity_assistant.status import capabilities  # noqa: E402
+from productivity_intelligence.agent import root_agent as _root_agent  # noqa: E402,F401
+from productivity_intelligence.status import capabilities  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("Starting productivity assistant...")
+logger.info("Starting Productivity Intelligence Platform...")
 
 app = get_fast_api_app(
     agents_dir=AGENTS_DIR,

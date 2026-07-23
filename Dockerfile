@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .
-COPY productivity_assistant ./agents/productivity_assistant
+COPY productivity_intelligence ./agents/productivity_intelligence
 
 EXPOSE 8080
 

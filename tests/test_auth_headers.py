@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import productivity_assistant.tools as tools_module
-from productivity_assistant.tools import RefreshingGoogleAuthHeaders
+import productivity_intelligence.tools as tools_module
+from productivity_intelligence.tools import RefreshingGoogleAuthHeaders
 
 
 class FakeCredentials:

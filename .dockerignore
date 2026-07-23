@@ -6,8 +6,15 @@ __pycache__
 .env
 .env.*
 !.env.example
-mcp
 cleanup
-submission_assets
 tests
 README.md
+SECURITY.md
+pyproject.toml
+requirements-dev.txt
+requirements-setup.txt
+cloudbuild.*.yaml
+setup/*
+!setup/migrate.py
+!setup/alloydb_schema.sql
+!setup/seed_demo.sql

@@ -8,10 +8,6 @@ __pycache__/
 *.pyc
 *.pyo
 
-# External codelab repos (not our code)
-mcp/
-devrel-demos/
-
 # Binaries
 alloydb-auth-proxy
 toolbox-*
@@ -25,3 +21,7 @@ toolbox-*
 Thumbs.db
 .deploy-build-tag
 .coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.adk/
