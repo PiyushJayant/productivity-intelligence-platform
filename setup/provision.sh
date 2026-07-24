@@ -205,16 +205,6 @@ if ! gcloud alloydb clusters describe "${ALLOYDB_CLUSTER}" --region="${REGION}" 
   rm -f "${flags_file}"
   trap - EXIT
 fi
-admin_flags_file="$(mktemp)"
-chmod 600 "${admin_flags_file}"
-trap 'rm -f "${admin_flags_file}"' EXIT
-printf '%s\n' "--password: ${ADMIN_DB_PASSWORD}" >"${admin_flags_file}"
-gcloud alloydb users set-password "${ADMIN_DB_USER}" \
-  --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
-  --project="${PROJECT_ID}" --flags-file="${admin_flags_file}" >/dev/null
-rm -f "${admin_flags_file}"
-trap - EXIT
-
 if ! gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
     --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
     --project="${PROJECT_ID}" >/dev/null 2>&1; then
@@ -258,5 +248,15 @@ else
       --project="${PROJECT_ID}" --quiet
   fi
 fi
+
+admin_flags_file="$(mktemp)"
+chmod 600 "${admin_flags_file}"
+trap 'rm -f "${admin_flags_file}"' EXIT
+printf '%s\n' "--password: ${ADMIN_DB_PASSWORD}" >"${admin_flags_file}"
+gcloud alloydb users set-password "${ADMIN_DB_USER}" \
+  --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+  --project="${PROJECT_ID}" --flags-file="${admin_flags_file}" >/dev/null
+rm -f "${admin_flags_file}"
+trap - EXIT
 
 echo "[OK] Infrastructure provisioned in ${PROJECT_ID}/${REGION} (${COST_PROFILE})"
