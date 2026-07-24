@@ -5,11 +5,6 @@ import sys
 from fastapi.responses import JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
 
-from productivity_intelligence.observability import (
-    configure_logging,
-    request_observability_middleware,
-)
-
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 PACKAGED_AGENTS_DIR = os.path.join(APP_ROOT, "agents")
 AGENTS_DIR = os.environ.get(
@@ -18,6 +13,11 @@ AGENTS_DIR = os.environ.get(
 )
 if AGENTS_DIR not in sys.path:
     sys.path.insert(0, AGENTS_DIR)
+
+from productivity_intelligence.observability import (  # noqa: E402
+    configure_logging,
+    request_observability_middleware,
+)
 
 configure_logging()
 
