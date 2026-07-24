@@ -1,1 +1,2 @@
 google-cloud-bigquery==3.35.1
+toolbox-core==1.0.0
