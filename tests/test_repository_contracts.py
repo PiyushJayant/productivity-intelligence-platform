@@ -120,6 +120,15 @@ def test_demo_cost_profile_has_hard_scaling_and_database_guards():
     assert "cost-status) cost_status" in deploy
 
 
+def test_budget_lookup_and_cleanup_compare_exact_display_names():
+    provision = (ROOT / "setup" / "provision.sh").read_text(encoding="utf-8")
+    cleanup = (ROOT / "cleanup" / "cleanup_all.sh").read_text(encoding="utf-8")
+
+    assert 'item.get("displayName") == target' in provision
+    assert 'item.get("displayName") == target' in cleanup
+    assert "--filter=\"displayName=" not in provision
+
+
 def test_builds_are_immutable_and_reused():
     deploy = (ROOT / "setup" / "deploy.sh").read_text(encoding="utf-8")
     assert 'git -C "${REPO_ROOT}" rev-parse HEAD' in deploy

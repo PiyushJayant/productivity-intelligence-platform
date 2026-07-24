@@ -30,7 +30,9 @@ BILLING_ACCOUNT="$(gcloud billing projects describe "${PROJECT_ID}" \
   --format='value(billingAccountName.basename())')"
 IFS=',' read -r -a budget_thresholds <<<"${BUDGET_THRESHOLDS}"
 budget_resource="$(gcloud billing budgets list --billing-account="${BILLING_ACCOUNT}" \
-  --filter="displayName='${BUDGET_NAME}'" --format='value(name)' --limit=1)"
+  --format=json | "${PYTHON_BIN}" -c \
+  'import json,sys; target=sys.argv[1]; print(next((item["name"] for item in json.load(sys.stdin) if item.get("displayName") == target), ""))' \
+  "${BUDGET_NAME}")"
 if [[ -z "${budget_resource}" ]]; then
   threshold_args=()
   for threshold in "${budget_thresholds[@]}"; do

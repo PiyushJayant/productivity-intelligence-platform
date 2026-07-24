@@ -114,7 +114,9 @@ if [[ -n "${billing_account}" ]]; then
     [[ -z "${budget}" ]] || gcloud billing budgets delete "${budget}" \
       --billing-account="${billing_account}" --quiet 2>/dev/null || true
   done < <(gcloud billing budgets list --billing-account="${billing_account}" \
-    --filter="displayName='${BUDGET_NAME}'" --format='value(name)' 2>/dev/null)
+    --format=json 2>/dev/null | "${PYTHON_BIN}" -c \
+    'import json,sys; target=sys.argv[1]; print("\n".join(item["name"] for item in json.load(sys.stdin) if item.get("displayName") == target))' \
+    "${BUDGET_NAME}")
 fi
 
 gcloud services vpc-peerings delete --service=servicenetworking.googleapis.com \
