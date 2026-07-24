@@ -122,6 +122,9 @@ for role in "projects/${PROJECT_ID}/roles/${LIFECYCLE_ROLE_ID}" roles/logging.lo
 done
 
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+BUILD_SERVICE_ACCOUNT="$(gcloud builds get-default-service-account \
+  --project="${PROJECT_ID}")"
+grant_project_role "${BUILD_SERVICE_ACCOUNT}" roles/cloudbuild.builds.builder
 ALLOYDB_SERVICE_AGENT="service-${PROJECT_NUMBER}@gcp-sa-alloydb.iam.gserviceaccount.com"
 gcloud beta services identity create --service=alloydb.googleapis.com \
   --project="${PROJECT_ID}" >/dev/null
