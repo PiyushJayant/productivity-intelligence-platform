@@ -7,6 +7,7 @@ notes, or calendar actions when the AlloyDB-backed MCP toolbox is unavailable.
 from google.adk.agents import LlmAgent
 
 from productivity_intelligence.config import settings
+from productivity_intelligence.context_policy import record_model_usage
 from productivity_intelligence.model_config import gemini_generate_content_config
 from productivity_intelligence.response_contract import COMMON_RESPONSE_CONTRACT
 from productivity_intelligence.status import capabilities
@@ -119,4 +120,5 @@ root_agent = LlmAgent(
     description=_build_description(),
     instruction=_build_instruction(),
     sub_agents=AVAILABLE_AGENTS,
+    after_model_callback=record_model_usage,
 )

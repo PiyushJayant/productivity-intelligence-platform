@@ -3,6 +3,10 @@
 from google.adk.agents import LlmAgent
 
 from productivity_intelligence.config import settings
+from productivity_intelligence.context_policy import (
+    compact_specialist_history,
+    record_model_usage,
+)
 from productivity_intelligence.model_config import gemini_generate_content_config
 from productivity_intelligence.response_contract import NOTES_RESPONSE_CONTRACT
 from productivity_intelligence.status import capabilities
@@ -36,8 +40,17 @@ You can:
 Prefer semantic search for conceptual queries and list for browsing all notes.
 If a delete returns no row, explain that the note ID was not found.
 
+Before creating a note, distinguish actual note content from an instruction to
+perform work. If the requested content is vague or could mean changing the
+application (for example, "add notes to create logs"), ask one concise question
+about what should be saved. Do not save the user's instruction itself as the
+note body. When the user supplied clear content, infer a concise title if needed,
+use empty tags when omitted, and create the note without redundant questions.
+
 {NOTES_RESPONSE_CONTRACT}""",
         tools=notes_tools,
+        before_model_callback=compact_specialist_history,
+        after_model_callback=record_model_usage,
     )
     capabilities.mark_loaded("notes_agent")
     return agent

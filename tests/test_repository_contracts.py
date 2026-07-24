@@ -29,6 +29,9 @@ def test_toolbox_configuration_is_valid_and_parameterized():
     assert "google_ml.embedding" in statements
     assert "${EMBEDDING_MODEL}" in statements
     assert "NULLIF($4, '')::date" in statements
+    assert "NULLIF($5, '')::timestamptz" in statements
+    assert "${DEFAULT_TIMEZONE}" in statements
+    assert "to_char(time, 'HH24:MI')" in statements
     assert statements.count("LIMIT ${DEFAULT_PAGE_SIZE}") == 3
 
 
@@ -37,6 +40,8 @@ def test_schema_uses_exact_vector_search_without_scann_or_password():
     assert "alloydb_scann" not in schema
     assert "CREATE INDEX notes_embedding_scann_idx" not in schema
     assert "VECTOR(__EMBEDDING_DIMENSIONS__)" in schema
+    assert "due_at        TIMESTAMPTZ" in schema
+    assert "002_task_deadlines" in schema
     assert "PASSWORD '" not in schema
 
 
@@ -139,7 +144,8 @@ def test_builds_are_immutable_and_reused():
 def test_bigquery_aggregation_is_pushed_to_alloydb():
     setup = (ROOT / "setup" / "bigquery_setup.py").read_text(encoding="utf-8")
     assert setup.count("FROM EXTERNAL_QUERY(") == 2
-    assert "GROUP BY created_at::date, priority" in setup
+    assert "GROUP BY (created_at AT TIME ZONE '{timezone}')::date, priority" in setup
+    assert setup.count("AT TIME ZONE '{timezone}'") >= 5
     assert "GROUP BY date" in setup
 
 
@@ -167,8 +173,24 @@ def test_response_contract_date_resolution_and_evaluations_are_shared():
     assert "CALENDAR_RESPONSE_CONTRACT" in calendar
     assert "resolve_relative_date" in task
     assert "resolve_relative_date" in calendar
+    assert "resolve_relative_datetime" in task
+    assert "resolve_relative_datetime" in calendar
     assert "function call by itself is never a complete answer" in response_contract
     assert "setup/evaluate_contracts.py" in workflow
+
+
+def test_analytics_agent_exposes_only_parameterized_domain_query():
+    agent = (
+        ROOT / "productivity_intelligence" / "sub_agents" / "analytics_agent.py"
+    ).read_text(encoding="utf-8")
+    tools = (
+        ROOT / "productivity_intelligence" / "analytics_tools.py"
+    ).read_text(encoding="utf-8")
+
+    assert "get_productivity_trends" in agent
+    assert "execute_sql_readonly" not in agent
+    assert "SAFE_DIVIDE(task.completed_tasks, task.total_tasks)" in tools
+    assert "AVG(completion_rate)" not in tools
 
 
 def test_scheduled_lifecycle_is_opt_in_private_and_cleanable():

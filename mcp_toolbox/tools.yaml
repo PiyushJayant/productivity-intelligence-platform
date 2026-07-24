@@ -20,7 +20,9 @@ tools:
     description: >
       Create a task only after all required values are known. Provide a
       nonblank title, optional description, priority (low/medium/high), and an
-      optional resolved ISO due date. Returns the created task record.
+      optional resolved ISO due date or RFC 3339 deadline. When a user supplied
+      a time, due_at must preserve it instead of silently dropping it. Returns
+      normalized task metadata in ${DEFAULT_TIMEZONE}.
     parameters:
       - name: title
         type: string
@@ -34,10 +36,29 @@ tools:
       - name: due_date
         type: string
         description: "Resolved due date such as 2026-07-31, or an empty string"
+      - name: due_at
+        type: string
+        description: "Resolved UTC RFC 3339 deadline, or an empty string when no time was requested"
     statement: >
-      INSERT INTO tasks (title, description, priority, due_date)
-      VALUES ($1, $2, $3, NULLIF($4, '')::date)
-      RETURNING id, title, priority, status, due_date, created_at;
+      WITH created AS (
+        INSERT INTO tasks (title, description, priority, due_date, due_at)
+        VALUES (
+          $1, $2, $3,
+          COALESCE(
+            NULLIF($4, '')::date,
+            (NULLIF($5, '')::timestamptz AT TIME ZONE '${DEFAULT_TIMEZONE}')::date
+          ),
+          NULLIF($5, '')::timestamptz
+        )
+        RETURNING id, title, priority, status, due_date, due_at
+      )
+      SELECT id, title, priority, status,
+        due_date::text AS due_date,
+        CASE WHEN due_at IS NULL THEN NULL ELSE
+          to_char(due_at AT TIME ZONE '${DEFAULT_TIMEZONE}', 'YYYY-MM-DD HH24:MI')
+        END AS due_at_local,
+        '${DEFAULT_TIMEZONE}' AS due_timezone
+      FROM created;
 
   list_tasks:
     kind: postgres-sql
@@ -51,7 +72,13 @@ tools:
         type: string
         description: "Filter by task status: pending, in_progress, done, or all"
     statement: >
-      SELECT id, title, description, priority, status, due_date, created_at
+      SELECT id, title, description, priority, status,
+        due_date::text AS due_date,
+        CASE WHEN due_at IS NULL THEN NULL ELSE
+          to_char(due_at AT TIME ZONE '${DEFAULT_TIMEZONE}', 'YYYY-MM-DD HH24:MI')
+        END AS due_at_local,
+        '${DEFAULT_TIMEZONE}' AS due_timezone,
+        created_at
       FROM tasks
       WHERE $1 = 'all' OR status = $1
       ORDER BY created_at DESC
@@ -116,7 +143,8 @@ tools:
         $1, $2, $3,
         google_ml.embedding('${EMBEDDING_MODEL}', $1 || ' ' || $2)::vector
       )
-      RETURNING id, title, tags, created_at;
+      RETURNING id, title, LEFT(content, 180) AS content_preview,
+        CASE WHEN tags = '' THEN 'No tags' ELSE tags END AS tags;
 
   search_notes_semantic:
     kind: postgres-sql
@@ -201,9 +229,14 @@ tools:
         type: string
         description: Optional description or agenda for the event
     statement: >
-      INSERT INTO events (title, date, time, duration_minutes, description)
-      VALUES ($1, $2::date, $3::time, $4, $5)
-      RETURNING id, title, date, time, duration_minutes, created_at;
+      WITH created AS (
+        INSERT INTO events (title, date, time, duration_minutes, description)
+        VALUES ($1, $2::date, $3::time, $4, $5)
+        RETURNING id, title, date, time, duration_minutes
+      )
+      SELECT id, title, date::text AS date,
+        to_char(time, 'HH24:MI') AS time, duration_minutes
+      FROM created;
 
   list_events:
     kind: postgres-sql
@@ -217,7 +250,9 @@ tools:
         type: string
         description: Date to filter by in YYYY-MM-DD format, or empty string for all events
     statement: >
-      SELECT id, title, date, time, duration_minutes, description, created_at
+      SELECT id, title, date::text AS date,
+        to_char(time, 'HH24:MI') AS time,
+        duration_minutes, description, created_at
       FROM events
       WHERE NULLIF($1, '') IS NULL OR date = NULLIF($1, '')::date
       ORDER BY date ASC, time ASC

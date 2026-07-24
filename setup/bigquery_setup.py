@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from google.cloud import bigquery
 
@@ -16,8 +17,19 @@ def required_env(name: str) -> str:
 
 
 def create_live_views(
-    project_id: str, region: str, dataset_id: str, connection_id: str
+    project_id: str,
+    region: str,
+    dataset_id: str,
+    connection_id: str,
+    timezone: str,
 ) -> None:
+    try:
+        ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as error:
+        raise ValueError("DEFAULT_TIMEZONE must be a valid IANA timezone") from error
+    if "'" in timezone:
+        raise ValueError("DEFAULT_TIMEZONE contains unsupported characters")
+
     client = bigquery.Client(project=project_id)
     dataset_ref = bigquery.Dataset(f"{project_id}.{dataset_id}")
     dataset_ref.location = region
@@ -32,7 +44,7 @@ def create_live_views(
       '{connection}',
       '''
       SELECT
-        created_at::date AS date,
+        (created_at AT TIME ZONE '{timezone}')::date AS date,
         priority,
         COUNT(*)::bigint AS total_tasks,
         COUNT(*) FILTER (WHERE status = 'done')::bigint AS completed_tasks,
@@ -41,7 +53,7 @@ def create_live_views(
         (COUNT(*) FILTER (WHERE status = 'done'))::double precision
           / NULLIF(COUNT(*), 0) AS completion_rate
       FROM tasks
-      GROUP BY created_at::date, priority
+      GROUP BY (created_at AT TIME ZONE '{timezone}')::date, priority
       '''
     )
     """
@@ -53,18 +65,19 @@ def create_live_views(
       '{connection}',
       '''
       WITH activity AS (
-        SELECT created_at::date AS date, 1 AS tasks_created, 0 AS tasks_completed,
+        SELECT (created_at AT TIME ZONE '{timezone}')::date AS date,
+               1 AS tasks_created, 0 AS tasks_completed,
                0 AS notes_created, 0 AS events_scheduled
         FROM tasks
         UNION ALL
-        SELECT completed_at::date, 0, 1, 0, 0
+        SELECT (completed_at AT TIME ZONE '{timezone}')::date, 0, 1, 0, 0
         FROM tasks
         WHERE completed_at IS NOT NULL
         UNION ALL
-        SELECT created_at::date, 0, 0, 1, 0
+        SELECT (created_at AT TIME ZONE '{timezone}')::date, 0, 0, 1, 0
         FROM notes
         UNION ALL
-        SELECT created_at::date, 0, 0, 0, 1
+        SELECT (created_at AT TIME ZONE '{timezone}')::date, 0, 0, 0, 1
         FROM events
       )
       SELECT date,
@@ -91,6 +104,7 @@ def main() -> None:
         required_env("REGION"),
         required_env("BIGQUERY_DATASET"),
         required_env("BIGQUERY_CONNECTION_ID"),
+        required_env("DEFAULT_TIMEZONE"),
     )
 
 

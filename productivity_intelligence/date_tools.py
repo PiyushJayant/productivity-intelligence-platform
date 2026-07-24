@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from productivity_intelligence.config import settings
@@ -88,6 +88,182 @@ def resolve_relative_date(expression: str) -> str:
             "date": resolved.isoformat(),
             "timezone": settings.default_timezone,
             "interpretation": interpretation,
+        }
+    except ValueError as error:
+        result = {
+            "status": "clarification_required",
+            "timezone": settings.default_timezone,
+            "message": str(error),
+        }
+    return json.dumps(result, separators=(",", ":"))
+
+
+def _parse_clock(hour: int, minute: int, meridiem: str | None) -> time:
+    if minute > 59:
+        raise ValueError("minutes must be between 00 and 59")
+    if meridiem:
+        if not 1 <= hour <= 12:
+            raise ValueError("12-hour times must use an hour from 1 to 12")
+        hour = hour % 12 + (12 if meridiem == "pm" else 0)
+    elif not 0 <= hour <= 23:
+        raise ValueError("24-hour times must use an hour from 00 to 23")
+    return time(hour, minute)
+
+
+def _resolve_datetime(expression: str, *, today: date) -> tuple[date, time, str]:
+    normalized = re.sub(r"\s+", " ", expression.strip().lower())
+    match = re.fullmatch(
+        r"(.+?)\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)",
+        normalized,
+    )
+    if match:
+        date_expression, hour, minute, meridiem = match.groups()
+        resolved_date, date_interpretation = _resolve_date(date_expression, today=today)
+        resolved_time = _parse_clock(int(hour), int(minute or "0"), meridiem)
+        return resolved_date, resolved_time, f"{date_interpretation} at {resolved_time:%H:%M}"
+
+    match = re.fullmatch(r"(.+?)\s+at\s+(\d{1,2}):(\d{2})", normalized)
+    if match:
+        date_expression, hour, minute = match.groups()
+        resolved_date, date_interpretation = _resolve_date(date_expression, today=today)
+        resolved_time = _parse_clock(int(hour), int(minute), None)
+        return resolved_date, resolved_time, f"{date_interpretation} at {resolved_time:%H:%M}"
+
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2})[t ](\d{1,2}):(\d{2})",
+        normalized,
+    )
+    if match:
+        date_expression, hour, minute = match.groups()
+        resolved_date, _ = _resolve_date(date_expression, today=today)
+        resolved_time = _parse_clock(int(hour), int(minute), None)
+        return resolved_date, resolved_time, "explicit local date and time"
+
+    if re.fullmatch(r".+?\s+at\s+\d{1,2}(?::\d{2})?", normalized):
+        raise ValueError(
+            "time is ambiguous; include AM or PM, or use 24-hour HH:MM format"
+        )
+    raise ValueError(
+        "unsupported date-time expression; use a relative date with a time "
+        "(for example, tomorrow at 4 PM) or YYYY-MM-DD HH:MM"
+    )
+
+
+def resolve_relative_datetime(expression: str) -> str:
+    """Resolve a local date-time expression without guessing an ambiguous clock time.
+
+    Args:
+        expression: A phrase such as "today at 4 PM", "next Friday at 09:30 AM",
+            or "2026-07-25 16:00".
+
+    Returns:
+        Compact JSON containing the resolved local date/time, configured timezone,
+        and an RFC 3339 UTC instant suitable for a TIMESTAMPTZ database field.
+    """
+
+    timezone = ZoneInfo(settings.default_timezone)
+    today = datetime.now(timezone).date()
+    try:
+        resolved_date, resolved_time, interpretation = _resolve_datetime(
+            expression, today=today
+        )
+        local_datetime = datetime.combine(
+            resolved_date, resolved_time, tzinfo=timezone
+        )
+        result = {
+            "status": "resolved",
+            "date": resolved_date.isoformat(),
+            "time": resolved_time.strftime("%H:%M"),
+            "timezone": settings.default_timezone,
+            "local_datetime": local_datetime.isoformat(),
+            "utc_datetime": local_datetime.astimezone(UTC).isoformat().replace(
+                "+00:00", "Z"
+            ),
+            "interpretation": interpretation,
+        }
+    except ValueError as error:
+        result = {
+            "status": "clarification_required",
+            "timezone": settings.default_timezone,
+            "message": str(error),
+        }
+    return json.dumps(result, separators=(",", ":"))
+
+
+def _subtract_months(value: date, months: int) -> date:
+    month_index = value.year * 12 + value.month - 1 - months
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def resolve_reporting_period(expression: str) -> str:
+    """Resolve a reporting-period phrase to an inclusive date range and grain.
+
+    Args:
+        expression: A period such as "last 7 days", "rolling 12 months",
+            "this month", "previous calendar year", or
+            "2026-01-01 to 2026-07-25".
+
+    Returns:
+        JSON with resolved start/end dates and a recommended day/month grain.
+        The phrase "last year" intentionally requests clarification because it
+        can mean either a rolling year or the previous calendar year.
+    """
+
+    timezone = ZoneInfo(settings.default_timezone)
+    today = datetime.now(timezone).date()
+    normalized = re.sub(r"\s+", " ", expression.strip().lower())
+    try:
+        if normalized == "last year":
+            raise ValueError(
+                'say "rolling 12 months" or "previous calendar year"'
+            )
+        if normalized == "rolling 12 months":
+            start = _subtract_months(today.replace(day=1), 11)
+            end, grain = today, "month"
+        elif normalized == "previous calendar year":
+            start = date(today.year - 1, 1, 1)
+            end, grain = date(today.year - 1, 12, 31), "month"
+        elif normalized == "this year":
+            start, end, grain = date(today.year, 1, 1), today, "month"
+        elif normalized == "this month":
+            start, end, grain = today.replace(day=1), today, "day"
+        elif normalized == "this week":
+            start, end, grain = today - timedelta(days=today.weekday()), today, "day"
+        elif match := re.fullmatch(r"last (\d{1,3}) (day|days|week|weeks)", normalized):
+            count = int(match.group(1))
+            if count < 1 or count > 365:
+                raise ValueError("reporting periods must be between 1 and 365 days")
+            days = count * (7 if match.group(2).startswith("week") else 1)
+            start, end = today - timedelta(days=days - 1), today
+            grain = "day" if days <= 31 else "month"
+        elif match := re.fullmatch(r"last (\d{1,2}) (month|months)", normalized):
+            count = int(match.group(1))
+            if count < 1 or count > 24:
+                raise ValueError("reporting periods must be between 1 and 24 months")
+            start = _subtract_months(today.replace(day=1), count - 1)
+            end, grain = today, "month"
+        elif match := re.fullmatch(
+            r"(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})",
+            normalized,
+        ):
+            start, end = date.fromisoformat(match.group(1)), date.fromisoformat(
+                match.group(2)
+            )
+            if end < start:
+                raise ValueError("reporting end date must not be before its start date")
+            grain = "day" if (end - start).days <= 31 else "month"
+        else:
+            raise ValueError(
+                "use last N days/weeks/months, this week/month/year, "
+                "rolling 12 months, previous calendar year, or an ISO date range"
+            )
+        result = {
+            "status": "resolved",
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "grain": grain,
+            "timezone": settings.default_timezone,
+            "interpretation": normalized,
         }
     except ValueError as error:
         result = {

@@ -29,7 +29,18 @@ class JsonLogFormatter(logging.Formatter):
         request_id = request_id_context.get()
         if request_id:
             payload["request_id"] = request_id
-        for field in ("method", "path", "status", "latency_ms"):
+        for field in (
+            "method",
+            "path",
+            "status",
+            "latency_ms",
+            "agent",
+            "context_events_before",
+            "context_events_after",
+            "prompt_tokens",
+            "output_tokens",
+            "cached_tokens",
+        ):
             value = getattr(record, field, None)
             if value is not None:
                 payload[field] = value

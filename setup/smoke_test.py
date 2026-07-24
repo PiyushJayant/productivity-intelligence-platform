@@ -13,6 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery
 from toolbox_core import ToolboxSyncClient
@@ -128,9 +129,16 @@ def main() -> None:
     parser.add_argument("--service-account", required=True)
     parser.add_argument("--assistant-url")
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--timezone", required=True)
     args = parser.parse_args()
 
     marker = f"smoke-{uuid.uuid4().hex[:10]}"
+    timezone = ZoneInfo(args.timezone)
+    deadline_local = (datetime.now(timezone) + timedelta(days=1)).replace(
+        hour=16, minute=0, second=0, microsecond=0
+    )
+    deadline_utc = deadline_local.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    activity_date = datetime.now(timezone).date()
     token = identity_token(args.service_account, args.toolbox_url)
     headers = {"Authorization": f"Bearer {token}"}
     client = ToolboxSyncClient(args.toolbox_url, client_headers=headers)
@@ -149,9 +157,12 @@ def main() -> None:
                 title=f"{marker} deployment task",
                 description="Synthetic deployment verification record",
                 priority="high",
-                due_date="",
+                due_date=deadline_local.date().isoformat(),
+                due_at=deadline_utc,
             )
         )
+        assert task_rows[0]["due_at_local"].endswith("16:00")
+        assert task_rows[0]["due_timezone"] == args.timezone
         task_id = int(task_rows[0]["id"])
         updated = decode_rows(update_task(task_id=task_id, status="done"))
         assert updated and updated[0]["status"] == "done"
@@ -169,7 +180,7 @@ def main() -> None:
         if args.assistant_url:
             verify_chat_tool_completion(args.assistant_url, marker)
 
-        event_date = (datetime.now(UTC) + timedelta(days=1)).date().isoformat()
+        event_date = deadline_local.date().isoformat()
         event_rows = decode_rows(
             create_event(
                 title=f"{marker} verification event",
@@ -187,10 +198,21 @@ def main() -> None:
         sql = f"""
         SELECT SUM(completed_tasks) AS completed
         FROM `{args.project}.{args.dataset}.task_summary`
-        WHERE date = CURRENT_DATE() AND priority = 'high'
+        WHERE date = @activity_date AND priority = 'high'
         """
+        query_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("activity_date", "DATE", activity_date)
+            ]
+        )
         for attempt in range(6):
-            rows = list(bq.query(sql, location=args.region).result())
+            rows = list(
+                bq.query(
+                    sql,
+                    location=args.region,
+                    job_config=query_config,
+                ).result()
+            )
             if rows and (rows[0].completed or 0) >= 1:
                 break
             if attempt == 5:

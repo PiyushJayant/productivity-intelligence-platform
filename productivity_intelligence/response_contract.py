@@ -22,6 +22,9 @@ User-visible response contract:
   deletion. Label them explicitly as `ID`.
 - Translate dependency failures into a short capability message and a useful
   next step. Do not claim an action succeeded unless its tool result confirms it.
+- Preserve every material value in the user's request. If a requested value
+  cannot be represented by a tool, explain the limitation before mutation
+  rather than silently dropping it.
 - Limit list responses to {settings.default_page_size} records unless the user
   explicitly asks for more. If additional records may exist, say that the list
   is limited rather than inventing a total.
@@ -38,9 +41,10 @@ TASK_RESPONSE_CONTRACT = f"""
 
 Task presentation:
 - For a list, start with `### Tasks` and use:
-  `| ID | Task | Priority | Status | Due date |`
+  `| ID | Task | Priority | Status | Due date or deadline |`
   `|---:|---|---|---|---|`
 - Use `No due date` instead of `None` or `null`.
+- Show timed deadlines in `{settings.default_timezone}` and include the timezone.
 - Use friendly status labels: Pending, In progress, and Completed.
 - If no records match, say `No matching tasks found.` without an empty table.
 - For a mutation, use `### Task created`, `### Task updated`, or
@@ -57,9 +61,11 @@ Note presentation:
   content preview, and tags on separate lines.
 - Include relevance as a percentage only when semantic search returned a score.
 - Keep previews under 180 characters unless full content was requested.
+- Render an empty tag value as `No tags`; never emit an empty `Tags:` label.
 - If no records match, say `No matching notes found.` without placeholders.
 - For a mutation, use `### Note created` or `### Note deleted`, followed by the
-  confirmed fields on separate lines.
+  confirmed title, ID, content preview, and tags on separate lines. Omit raw
+  creation timestamps unless the user requested them.
 """.strip()
 
 
@@ -71,6 +77,8 @@ Calendar presentation:
   `| ID | Date | Time | Event | Duration |`
   `|---:|---|---|---|---:|`
 - Sort returned events chronologically and express duration in minutes.
+- When duration was omitted, state that the displayed 60-minute duration is the
+  applied default.
 - If no records match, say `No matching calendar events found.`
 - For a mutation, use `### Event scheduled` or `### Event deleted`, followed by
   the confirmed fields on separate lines.
@@ -85,6 +93,8 @@ Analytics presentation:
 - State the requested date range or comparison period.
 - Use a compact Markdown table for multiple rows and bullets for one summary.
 - Format completion rates as percentages rather than decimal fractions.
+- Calculate aggregate completion rates from total completed and total task
+  counts, never by averaging per-group percentages.
 - Clearly identify periods with no activity and never fabricate missing values.
 """.strip()
 

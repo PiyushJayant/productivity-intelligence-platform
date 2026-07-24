@@ -97,6 +97,7 @@ class Settings:
     specialist_thinking_budget: int
     analytics_max_output_tokens: int
     analytics_thinking_budget: int
+    agent_context_max_events: int
     model_temperature: float
     default_timezone: str
     default_page_size: int
@@ -130,6 +131,7 @@ class Settings:
             specialist_thinking_budget=_integer("SPECIALIST_THINKING_BUDGET"),
             analytics_max_output_tokens=_integer("ANALYTICS_MAX_OUTPUT_TOKENS"),
             analytics_thinking_budget=_integer("ANALYTICS_THINKING_BUDGET"),
+            agent_context_max_events=_positive_integer("AGENT_CONTEXT_MAX_EVENTS"),
             model_temperature=_float("MODEL_TEMPERATURE"),
             default_timezone=_timezone("DEFAULT_TIMEZONE"),
             default_page_size=_positive_integer("DEFAULT_PAGE_SIZE"),

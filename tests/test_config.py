@@ -61,6 +61,11 @@ def test_invalid_generation_budget_is_rejected(monkeypatch):
         reload_config(monkeypatch, ROUTER_MAX_OUTPUT_TOKENS="-1")
 
 
+def test_context_window_must_be_positive(monkeypatch):
+    with pytest.raises(ValueError, match="AGENT_CONTEXT_MAX_EVENTS"):
+        reload_config(monkeypatch, AGENT_CONTEXT_MAX_EVENTS="0")
+
+
 def test_invalid_timezone_and_observability_values_are_rejected(monkeypatch):
     with pytest.raises(ValueError, match="DEFAULT_TIMEZONE"):
         reload_config(monkeypatch, DEFAULT_TIMEZONE="not-a-timezone")

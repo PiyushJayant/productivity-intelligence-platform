@@ -22,7 +22,7 @@ Cloud Run: productivity-intelligence
    |      v
    |   AlloyDB: tasks, notes, events, vector embeddings
    |
-   +-- analytics agent -> hosted BigQuery MCP
+   +-- analytics agent -> deterministic, parameterized BigQuery tool
                               |
                               v
                          BigQuery live views
@@ -200,7 +200,11 @@ automation is rejected for the `production` cost profile.
 - Router, specialist, and analytics output-token and thinking budgets are
   independently configurable.
 - `DEFAULT_TIMEZONE` controls deterministic resolution of phrases such as
-  "tomorrow", "Friday", and "in two weeks".
+  "tomorrow", "Friday", and "in two weeks", preserves task times as exact
+  timezone-aware deadlines, and controls analytics day boundaries.
+- `AGENT_CONTEXT_MAX_EVENTS` bounds specialist context. Compaction keeps the
+  latest real user turn and relevant tool exchange while removing duplicated ADK
+  transfer narration.
 - `DEFAULT_PAGE_SIZE` caps database list results before they enter the model
   context.
 - Demo defaults disable thinking for routing and CRUD while retaining a small
@@ -212,6 +216,8 @@ automation is rejected for the `production` cost profile.
 - `/healthz` reports process liveness without dependency details.
 - `/readyz` reports expected, loaded, and missing agents and returns 503 until
   required capabilities are available.
+- Structured model-usage telemetry records only agent names and token counts; it
+  never logs prompt or response bodies.
 
 Cloud Run reserves the public `/healthz` path. Hosted verification uses ADK's
 equivalent `/health` route; `/healthz` remains available inside the container.
@@ -219,8 +225,10 @@ equivalent `/health` route; `/healthz` remains available inside the container.
 ## Agent evaluation
 
 `tests/eval_cases.json` contains generic task, note, calendar, and analytics
-scenarios. It covers routing, expected tool use, relative dates, response
-structure, and confirmation before destructive operations.
+scenarios plus regressions derived from a 44-event production session. It covers
+routing, expected and forbidden tool use, combined date/time resolution,
+ambiguous time and reporting-period clarification, note-content fidelity,
+response structure, and confirmation before destructive operations.
 
 The deterministic evaluation gate validates the manifest without calling a
 model:
@@ -240,19 +248,23 @@ the expected tool call and a grounded final response without internal metadata.
 
 ## Data and analytics
 
-AlloyDB stores typed tasks, notes, and events. Task status changes maintain
+AlloyDB stores typed tasks, notes, and events. Tasks preserve both a typed due
+date and an optional exact timezone-aware deadline. Task status changes maintain
 `updated_at` and `completed_at`. Notes use the configured `EMBEDDING_MODEL` and
 `EMBEDDING_DIMENSIONS` through `google_ml.embedding` and exact cosine search.
 
 BigQuery dataset and connection names come from `.env`. The `task_summary` and
 `daily_activity` views aggregate inside AlloyDB before returning small result sets
-through `EXTERNAL_QUERY`. Analytics tools are metadata and read-only SQL only.
+through `EXTERNAL_QUERY`. Day boundaries use `DEFAULT_TIMEZONE`. The model cannot
+author SQL: the analytics agent exposes one domain tool that runs a fixed,
+parameterized query over the approved views and calculates period completion
+rates from summed completed and total tasks rather than averaging percentages.
 
 ## Security and operations
 
 - Toolbox never allows unauthenticated invocation.
 - The assistant supplies refreshable Google-signed ID tokens to Toolbox.
-- Hosted BigQuery MCP access tokens refresh through ADC.
+- BigQuery client credentials refresh through Application Default Credentials.
 - Secret values originate in the local SOT and are synchronized to Secret Manager;
   deployments resolve numeric versions.
 - Runtime identities have no Cloud Build or Artifact Registry administration.

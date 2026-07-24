@@ -15,6 +15,10 @@ FORBIDDEN_VISIBLE_PATTERNS = {
         re.IGNORECASE,
     ),
     "synthetic context wrapper": re.compile(r"(?m)^\s*For context:\s*$", re.IGNORECASE),
+    "empty labelled field": re.compile(r"(?m)^\s*(?:Tags|Title|Task|Date|Time):\s*$"),
+    "raw UTC timestamp": re.compile(
+        r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b"
+    ),
 }
 
 AGENT_HEADING_PATTERNS = {
@@ -39,4 +43,27 @@ def validate_visible_response(agent_name: str, response: str) -> list[str]:
     heading = AGENT_HEADING_PATTERNS.get(agent_name)
     if heading is not None and not heading.search(response):
         violations.append(f"response is missing the required {agent_name} heading")
+    if agent_name == "notes_agent" and "### Note created" in response:
+        if not re.search(
+            r"(?mi)^[ \t]*(?:Content preview|Preview):[ \t]*\S", response
+        ):
+            violations.append("created note response is missing a content preview")
+        if not re.search(r"(?mi)^[ \t]*Tags:[ \t]*\S", response):
+            violations.append("created note response is missing a normalized tag value")
+    return violations
+
+
+def validate_action_fidelity(
+    requested: dict[str, object],
+    confirmed: dict[str, object],
+) -> list[str]:
+    """Return requested material fields absent from a confirmed mutation."""
+
+    violations: list[str] = []
+    for field, value in requested.items():
+        if value is None or value == "":
+            continue
+        confirmed_value = confirmed.get(field)
+        if confirmed_value is None or confirmed_value == "":
+            violations.append(f"confirmed action dropped requested field: {field}")
     return violations

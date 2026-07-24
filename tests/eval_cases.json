@@ -60,15 +60,49 @@
       "id": "analytics_completion",
       "prompt": "Summarize my task completion rate for this week.",
       "expected_agent": "analytics_agent",
-      "expected_tool": "execute_sql_readonly",
+      "expected_tool": "get_productivity_trends",
       "requires_confirmation": false
     },
     {
       "id": "analytics_activity",
       "prompt": "Compare daily productivity activity for the last seven days.",
       "expected_agent": "analytics_agent",
-      "expected_tool": "execute_sql_readonly",
+      "expected_tool": "get_productivity_trends",
       "requires_confirmation": false
+    },
+    {
+      "id": "session_44_timed_task",
+      "prompt": "Create a task to suspend the application today at 4 PM.",
+      "expected_agent": "task_agent",
+      "expected_tool": "resolve_relative_datetime",
+      "requires_confirmation": false
+    },
+    {
+      "id": "session_44_ambiguous_clock",
+      "prompt": "Create a task to suspend the application today at 4.",
+      "expected_agent": "task_agent",
+      "expected_tool": "resolve_relative_datetime",
+      "requires_confirmation": false,
+      "forbidden_tools": ["create_task"],
+      "requires_clarification": true
+    },
+    {
+      "id": "session_44_ambiguous_note",
+      "prompt": "Add notes to create logs of this application.",
+      "expected_agent": "notes_agent",
+      "expected_tool": "",
+      "requires_confirmation": false,
+      "forbidden_tools": ["create_note"],
+      "requires_clarification": true
+    },
+    {
+      "id": "session_44_ambiguous_last_year",
+      "prompt": "Show my productivity trends for last year.",
+      "expected_agent": "analytics_agent",
+      "expected_tool": "resolve_reporting_period",
+      "requires_confirmation": false,
+      "forbidden_tools": ["get_productivity_trends"],
+      "requires_clarification": true
     }
   ]
 }

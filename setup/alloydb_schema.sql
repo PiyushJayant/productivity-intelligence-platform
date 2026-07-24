@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority      TEXT NOT NULL DEFAULT 'medium',
     status        TEXT NOT NULL DEFAULT 'pending',
     due_date      DATE,
+    due_at        TIMESTAMPTZ,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at  TIMESTAMPTZ,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS events (
 -- Upgrade databases created by the original prototype.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
 UPDATE tasks SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
 WHERE updated_at IS NULL;
 ALTER TABLE tasks ALTER COLUMN updated_at SET DEFAULT CURRENT_TIMESTAMP;
@@ -100,6 +102,10 @@ CREATE TRIGGER tasks_maintain_timestamps
 BEFORE UPDATE ON tasks
 FOR EACH ROW EXECUTE FUNCTION maintain_task_timestamps();
 
+CREATE INDEX IF NOT EXISTS tasks_due_at_idx
+ON tasks (due_at)
+WHERE due_at IS NOT NULL;
+
 GRANT USAGE ON SCHEMA public, google_ml TO productivity_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON tasks, notes, events TO productivity_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO productivity_app;
@@ -109,6 +115,8 @@ GRANT USAGE ON SCHEMA public TO productivity_analytics;
 GRANT SELECT ON tasks, notes, events TO productivity_analytics;
 
 INSERT INTO schema_migrations(version) VALUES ('001_deployment_readiness')
+ON CONFLICT (version) DO NOTHING;
+INSERT INTO schema_migrations(version) VALUES ('002_task_deadlines')
 ON CONFLICT (version) DO NOTHING;
 
 SELECT 'AlloyDB schema and migration applied' AS status;
