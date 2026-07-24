@@ -162,11 +162,13 @@ def test_response_contract_date_resolution_and_evaluations_are_shared():
 
 def test_scheduled_lifecycle_is_opt_in_private_and_cleanable():
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     provision = (ROOT / "setup" / "provision.sh").read_text(encoding="utf-8")
     deploy = (ROOT / "setup" / "deploy.sh").read_text(encoding="utf-8")
     cleanup = (ROOT / "cleanup" / "cleanup_all.sh").read_text(encoding="utf-8")
 
     assert "ENABLE_SCHEDULED_LIFECYCLE=false" in example
+    assert "!setup/lifecycle.py" in dockerignore
     assert "alloydb.instances.get,alloydb.instances.update" in provision
     assert "roles/alloydb.admin" not in provision
     assert "--oauth-service-account-email=${SCHEDULER_SA}" in deploy
