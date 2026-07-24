@@ -81,6 +81,8 @@ def test_single_environment_file_is_the_deployment_source_of_truth():
     assert "ANALYTICS_DB_PASSWORD=" in example
     assert "ensure_secret_from_env" in provision
     assert "openssl rand" not in common
+    assert '${#BIGQUERY_DATASET}" -le 1024' in common
+    assert "{0,1023}" not in common
 
 
 def test_environment_template_covers_every_required_deployment_variable():

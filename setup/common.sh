@@ -226,7 +226,8 @@ validate_config() {
     echo "Error: ADMIN_DB_USER must be the AlloyDB bootstrap administrator 'postgres'." >&2
     exit 1
   }
-  [[ "${BIGQUERY_DATASET}" =~ ^[A-Za-z_][A-Za-z0-9_]{0,1023}$ &&
+  [[ "${#BIGQUERY_DATASET}" -le 1024 &&
+      "${BIGQUERY_DATASET}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ &&
       "${BIGQUERY_CONNECTION_ID}" =~ ^[A-Za-z0-9_]+$ ]] || {
     echo "Error: BigQuery dataset or connection identifier is invalid." >&2
     exit 1

@@ -49,7 +49,9 @@ def test_invalid_mode_is_rejected(monkeypatch):
 
 
 def test_missing_required_model_is_rejected(monkeypatch):
-    monkeypatch.delenv("MODEL", raising=False)
+    # An explicit empty value prevents the real local .env from filling the key
+    # during reload, so this remains isolated after deployment initialization.
+    monkeypatch.setenv("MODEL", "")
     with pytest.raises(ValueError, match="MODEL is required"):
         importlib.reload(config)
 
