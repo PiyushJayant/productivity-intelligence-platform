@@ -173,6 +173,7 @@ def test_scheduled_lifecycle_is_opt_in_private_and_cleanable():
     assert "!setup/lifecycle.py" in dockerignore
     assert "alloydb.instances.get,alloydb.instances.update" in provision
     assert "roles/alloydb.admin" not in provision
+    assert "services identity create --service=alloydb.googleapis.com" in provision
     assert "--oauth-service-account-email=${SCHEDULER_SA}" in deploy
     assert "--role=roles/run.invoker" in deploy
     assert "LIFECYCLE_JOB_NAME" in cleanup

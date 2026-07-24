@@ -121,6 +121,8 @@ done
 
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
 ALLOYDB_SERVICE_AGENT="service-${PROJECT_NUMBER}@gcp-sa-alloydb.iam.gserviceaccount.com"
+gcloud beta services identity create --service=alloydb.googleapis.com \
+  --project="${PROJECT_ID}" >/dev/null
 grant_project_role "${ALLOYDB_SERVICE_AGENT}" roles/aiplatform.user
 
 ensure_secret_from_env "${ADMIN_DB_SECRET}" "${ADMIN_DB_PASSWORD}"
