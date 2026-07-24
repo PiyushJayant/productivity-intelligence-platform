@@ -5,6 +5,11 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS google_ml_integration;
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id            BIGSERIAL PRIMARY KEY,
     title         TEXT NOT NULL,
