@@ -1,0 +1,74 @@
+{
+  "cases": [
+    {
+      "id": "task_create_relative_date",
+      "prompt": "Create a high-priority task to submit the monthly report by next Friday.",
+      "expected_agent": "task_agent",
+      "expected_tool": "create_task",
+      "requires_confirmation": false
+    },
+    {
+      "id": "task_list_pending",
+      "prompt": "Show my pending tasks.",
+      "expected_agent": "task_agent",
+      "expected_tool": "list_tasks",
+      "requires_confirmation": false
+    },
+    {
+      "id": "task_delete_confirmation",
+      "prompt": "Delete task 12.",
+      "expected_agent": "task_agent",
+      "expected_tool": "delete_task",
+      "requires_confirmation": true
+    },
+    {
+      "id": "note_create",
+      "prompt": "Save a note titled Cloud checklist with a reminder to review access controls.",
+      "expected_agent": "notes_agent",
+      "expected_tool": "create_note",
+      "requires_confirmation": false
+    },
+    {
+      "id": "note_semantic_search",
+      "prompt": "Search my notes for ideas about secure application hosting.",
+      "expected_agent": "notes_agent",
+      "expected_tool": "search_notes_semantic",
+      "requires_confirmation": false
+    },
+    {
+      "id": "note_delete_confirmation",
+      "prompt": "Delete note 7.",
+      "expected_agent": "notes_agent",
+      "expected_tool": "delete_note",
+      "requires_confirmation": true
+    },
+    {
+      "id": "calendar_relative_date",
+      "prompt": "Schedule a 30-minute planning session tomorrow at 4 PM.",
+      "expected_agent": "calendar_agent",
+      "expected_tool": "create_event",
+      "requires_confirmation": false
+    },
+    {
+      "id": "calendar_delete_confirmation",
+      "prompt": "Delete calendar event 9.",
+      "expected_agent": "calendar_agent",
+      "expected_tool": "delete_event",
+      "requires_confirmation": true
+    },
+    {
+      "id": "analytics_completion",
+      "prompt": "Summarize my task completion rate for this week.",
+      "expected_agent": "analytics_agent",
+      "expected_tool": "execute_sql_readonly",
+      "requires_confirmation": false
+    },
+    {
+      "id": "analytics_activity",
+      "prompt": "Compare daily productivity activity for the last seven days.",
+      "expected_agent": "analytics_agent",
+      "expected_tool": "execute_sql_readonly",
+      "requires_confirmation": false
+    }
+  ]
+}

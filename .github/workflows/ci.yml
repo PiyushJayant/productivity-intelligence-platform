@@ -18,8 +18,13 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
-      - run: mypy main.py productivity_intelligence setup/bigquery_setup.py setup/migrate.py
+      - run: >-
+          mypy main.py productivity_intelligence
+          setup/bigquery_setup.py setup/migrate.py setup/init_env.py
+          setup/lifecycle.py setup/evaluate_contracts.py setup/smoke_test.py
       - run: pytest
+      - name: Validate deterministic agent evaluation manifest
+        run: python setup/evaluate_contracts.py
       - name: Dependency vulnerability scan
         # ADK 1.36.1 requires FastAPI <1, which requires Starlette <0.53.
         # Fixed Starlette releases are >=1.0.1; see SECURITY.md.
@@ -36,6 +41,12 @@ jobs:
           scandir: './setup ./cleanup'
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
+      - name: Parse deployment YAML
+        run: >-
+          python -c "from pathlib import Path; import yaml;
+          files=list(Path('.').glob('*.yaml'))+list(Path('.github/workflows').glob('*.yml'));
+          [yaml.safe_load(p.read_text()) for p in files];
+          print(f'validated {len(files)} YAML files')"
       - run: docker build -t productivity-intelligence:test .
       - run: docker build -f Dockerfile.toolbox -t productivity-toolbox:test .
       - run: docker build -f Dockerfile.migrate -t productivity-migrate:test .

@@ -1,11 +1,11 @@
 # Productivity Intelligence Platform
 
-A secure Google ADK work-orchestration platform for shared synthetic tasks,
-semantic knowledge, calendar events, and live productivity analytics on Google Cloud.
+A configurable Google ADK work-orchestration platform for synthetic tasks, semantic
+notes, calendar events, and live productivity analytics on Google Cloud.
 
-> This is a public demonstration application. Do not enter personal,
-> confidential, regulated, or production data. The assistant endpoint is public
-> for judging; its MCP Toolbox data plane is protected by Cloud Run IAM.
+> This is a public demonstration application. Do not enter personal, confidential,
+> regulated, or production data. The assistant is public for judging; its MCP
+> Toolbox data plane is protected by Cloud Run IAM.
 
 ## Architecture
 
@@ -13,16 +13,16 @@ semantic knowledge, calendar events, and live productivity analytics on Google C
 Public user
    |
    v
-Cloud Run: productivity-intelligence (public, orchestration identity)
+Cloud Run: productivity-intelligence
    |-- task / notes / calendar agents
-   |      |  Cloud Run ID token
+   |      |  refreshable Cloud Run ID token
    |      v
-   |   Cloud Run: productivity-toolbox (IAM protected, toolbox identity)
+   |   Cloud Run: productivity-toolbox (IAM protected)
    |      |  Direct VPC egress
    |      v
    |   AlloyDB: tasks, notes, events, vector embeddings
    |
-   +-- analytics agent -> hosted BigQuery MCP (read-only tools)
+   +-- analytics agent -> hosted BigQuery MCP
                               |
                               v
                          BigQuery live views
@@ -31,30 +31,53 @@ Cloud Run: productivity-intelligence (public, orchestration identity)
                          EXTERNAL_QUERY -> AlloyDB
 ```
 
-The deployment uses separate assistant, Toolbox, and migration service accounts.
-Database administrator, application, and analytics passwords are generated into
-Secret Manager and never stored in `.env` or Git.
+The assistant, Toolbox, migration job, lifecycle jobs, and scheduler have
+separate service accounts. The
+git-ignored `.env` is the single source of truth for every operator-controlled
+application, infrastructure, cost, monitoring, and secret value. Provisioning
+mirrors the three database passwords into Secret Manager. Cloud Run receives only
+numerically pinned secret references, never plaintext password variables.
 
 ## Prerequisites
 
-- A billing-enabled Google Cloud project in which you can create IAM, AlloyDB,
-  Cloud Run, networking, Secret Manager, BigQuery, and Cloud Build resources.
-- Owner-level setup permission, or equivalent granular permissions for IAM,
-  AlloyDB, Cloud Run, networking, Secret Manager, BigQuery, and Cloud Build.
-- `gcloud`, `bq`, `curl`, `openssl`, Git, Bash, and Python 3.11.
-- Active gcloud project must exactly match `GOOGLE_CLOUD_PROJECT`.
-- A billing budget and alert should be configured before creating AlloyDB.
+- A billing-enabled Google Cloud project.
+- Permissions to administer IAM, AlloyDB, Cloud Run, networking, Secret Manager,
+  BigQuery, Artifact Registry, Cloud Build, Monitoring, and billing budgets.
+- `gcloud`, `bq`, `curl`, Git, Bash, and Python 3.11.
+- The active gcloud project must exactly match `GOOGLE_CLOUD_PROJECT`.
+
+Create the one local environment file:
 
 ```bash
 gcloud auth login
 gcloud auth application-default login
-cp .env.example .env
-# Edit GOOGLE_CLOUD_PROJECT in .env, then activate the same project:
+python setup/init_env.py --project YOUR_PROJECT_ID
 gcloud config set project YOUR_PROJECT_ID
 ```
 
-`.env` contains identifiers and non-secret settings only. Deployment requires an
-explicit project ID and stops when the active project differs or billing is disabled.
+Review every value in `.env` before provisioning. `.env.example` is documentation
+and a template, not a runtime source. The initializer generates independent random
+passwords and applies restrictive file permissions on POSIX systems. Never commit,
+upload, print, or share `.env`.
+
+Preflight fails on missing values, placeholders, invalid profiles, unsafe scaling,
+project mismatch, or disabled billing.
+
+## Cost profiles
+
+`COST_PROFILE` selects validated safety constraints:
+
+- `demo`: zonal AlloyDB, zero minimum and exactly one maximum Cloud Run instance
+  for both services. The default `c4a-highmem-1` database is for demos and
+  development, not a production SLA.
+- `lean`: requires at least two AlloyDB vCPUs and permits independently configured
+  Cloud Run scaling without requiring regional availability.
+- `production`: requires at least two AlloyDB vCPUs and regional availability.
+
+The default template creates an INR 1,000 project budget with 25%, 50%, 75%, 90%, and
+100% thresholds. Budgets alert but do not cap spending. Resource sizes, estimates,
+limits, retention, generation budgets, and monitoring toggles remain configurable
+in `.env`.
 
 ## Local validation
 
@@ -64,12 +87,14 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 ruff check .
-mypy main.py productivity_intelligence setup/bigquery_setup.py setup/migrate.py
+mypy main.py productivity_intelligence setup/bigquery_setup.py setup/migrate.py \
+  setup/init_env.py setup/lifecycle.py setup/evaluate_contracts.py setup/smoke_test.py
 pytest
+python setup/evaluate_contracts.py
 pip-audit -r requirements.txt
 ```
 
-Docker validation:
+Container validation:
 
 ```bash
 docker build -t productivity-intelligence:test .
@@ -77,18 +102,12 @@ docker build -f Dockerfile.toolbox -t productivity-toolbox:test .
 docker build -f Dockerfile.migrate -t productivity-migrate:test .
 ```
 
-For local agent development, start Toolbox first and then run `adk web .`.
-Private AlloyDB requires a reachable VPC path; local Toolbox is not expected to
-reach a private instance from an ordinary workstation.
+For local agent development, start Toolbox and run `adk web .`. Private AlloyDB is
+not normally reachable from an ordinary workstation.
 
 ## Deployment
 
-The deployment workflow is idempotent, creates a project-scoped ₹5,000 monthly
-budget with 50%, 90%, and 100% thresholds, and supports individual phases.
-Budget alerts do not cap spending. The cost-conscious default uses a single-node
-`ZONAL` AlloyDB instance and limits each Cloud Run service to three instances.
-Set `ALLOYDB_AVAILABILITY_TYPE=REGIONAL` only when production high availability
-is required and the additional always-on database cost is acceptable.
+Run phases independently:
 
 ```bash
 ./setup/deploy.sh preflight
@@ -98,38 +117,33 @@ is required and the additional always-on database cost is acceptable.
 ./setup/deploy.sh deploy
 ./setup/deploy.sh verify
 ./setup/deploy.sh promote
+./setup/deploy.sh cost-status
 ```
 
-Run the complete workflow with:
+Or run the complete workflow:
 
 ```bash
 ./setup/deploy.sh full
 ```
 
-To insert shared synthetic demonstration records during migration:
-
-```bash
-SEED_DEMO=true ./setup/deploy.sh full
-```
+Set `SEED_DEMO=true` in `.env` for idempotent shared synthetic records. Shell
+overrides are intentionally unsupported because `.env` is the SOT.
 
 The full workflow:
 
-1. Verifies project access, billing, active project, configuration, and tools.
-2. Enables required APIs and creates least-privilege service identities.
-3. Creates Secret Manager credentials, a custom VPC/subnet, private-services
-   peering, Artifact Registry, and AlloyDB.
-4. Builds immutable assistant, Toolbox, and migration images.
-5. Runs the schema migration and embedding smoke test as a Cloud Run Job.
-6. Deploys IAM-protected Toolbox with Direct VPC egress.
-7. Creates an encrypted AlloyDB federation connection and live BigQuery views.
-8. Deploys an assistant candidate revision with no traffic.
-9. Verifies Toolbox authentication, hosted liveness, and `/readyz`.
-10. Promotes the verified candidate to 100% traffic.
-11. Creates the uptime check, alert policies, and categorized log metrics.
-
-For a destructive synthetic-only deployment smoke test that cleans up after
-itself, run `setup/smoke_test.py` with the deployed Toolbox URL and assistant
-service account.
+1. Validates the complete configuration contract, project access, and billing.
+2. Enables APIs and creates least-privilege service identities.
+3. Synchronizes `.env` credentials to Secret Manager.
+4. Creates private networking, Artifact Registry, and profile-sized AlloyDB.
+5. Applies image cleanup policies and builds only missing full-Git-SHA images.
+6. Runs the schema migration and embedding smoke test through a Cloud Run Job.
+7. Deploys IAM-protected Toolbox with Direct VPC egress.
+8. Creates the encrypted AlloyDB federation connection and live BigQuery views.
+9. Deploys an assistant candidate with no production traffic.
+10. Optionally deploys IAM-protected lifecycle jobs and Cloud Scheduler triggers.
+11. Verifies IAM, liveness, mode-specific readiness, and a synthetic end-to-end
+    CRUD, semantic-search, calendar, analytics, and final-response smoke suite.
+12. Promotes the candidate and applies configured monitoring and log exclusions.
 
 Rollback requires an explicit prior revision:
 
@@ -137,77 +151,131 @@ Rollback requires an explicit prior revision:
 ./setup/deploy.sh rollback productivity-intelligence-00001-abc
 ```
 
-## Runtime modes and endpoints
+## Suspend and resume
 
-- `APP_MODE=full`: requires task, notes, calendar, and analytics agents.
-- `APP_MODE=prototype`: loads only analytics.
-- `MODEL` controls every agent model and defaults to `gemini-2.5-flash`.
-- `GOOGLE_CLOUD_LOCATION` controls only Vertex AI inference and defaults to
-  `global`; deployment resources remain in `REGION=us-central1`. The global
-  endpoint spreads pay-as-you-go Gemini traffic across available capacity.
-- Every agent retries transient Vertex AI 429 and 5xx responses up to five
-  attempts with capped exponential backoff and jitter.
+AlloyDB is the primary idle-cost driver. Suspend instance compute whenever a demo
+is not in use:
 
-Operational endpoints:
+```bash
+./setup/deploy.sh suspend
+./setup/deploy.sh cost-status
+```
 
-- `/healthz`: process liveness; does not reveal dependency or credential errors.
-- `/readyz`: returns expected, loaded, and missing agent names; responds with 503
-  until every agent required by the selected mode is available.
+The cluster retains data and backup configuration, but database-backed capabilities
+are unavailable while suspended. Resume before testing or judging:
 
-Cloud Run's Google Front End reserves the exact public `/healthz` path and
-returns 404 before it reaches the container. The verifier and uptime check use
-ADK's equivalent hosted `/health` route; `/healthz` remains available inside the
-container and on platforms that do not reserve it.
+```bash
+./setup/deploy.sh resume
+./setup/deploy.sh verify
+```
 
-`setup/monitoring.sh` idempotently configures public liveness, Cloud Run 5xx and
-p95 latency alerts, an AlloyDB connection high-water alert, and categorized log
-metrics for startup, Toolbox authorization, MCP, and BigQuery failures.
+`AUTO_SUSPEND_AFTER_DEPLOY=true` verifies and promotes a full deployment before
+suspending AlloyDB. Leave it `false` when the application must remain immediately
+usable. Suspending a production profile requires typing the exact project ID.
 
-See `SECURITY.md` for the narrow Starlette advisory exceptions imposed by the
-ADK 1.36.1/FastAPI dependency constraint.
+Optional scheduled lifecycle automation is controlled entirely by `.env`:
 
-Only `productivity_intelligence` is packaged in the deployed ADK agents directory,
-and its root agent is `productivity_orchestrator`.
+```dotenv
+ENABLE_SCHEDULED_LIFECYCLE=true
+LIFECYCLE_RESUME_CRON="0 9 * * 1-5"
+LIFECYCLE_SUSPEND_CRON="0 20 * * *"
+LIFECYCLE_TIMEZONE=Asia/Kolkata
+```
+
+Apply or remove those jobs idempotently with:
+
+```bash
+./setup/deploy.sh lifecycle
+```
+
+The scheduler invokes private Cloud Run Jobs using OAuth. Those jobs can only
+change the configured AlloyDB instance activation policy. Scheduled lifecycle
+automation is rejected for the `production` cost profile.
+
+## Runtime behavior
+
+- `APP_MODE=full` requires task, notes, calendar, and analytics agents.
+- `APP_MODE=prototype` requires only analytics.
+- `MODEL` controls every agent model.
+- Router, specialist, and analytics output-token and thinking budgets are
+  independently configurable.
+- `DEFAULT_TIMEZONE` controls deterministic resolution of phrases such as
+  "tomorrow", "Friday", and "in two weeks".
+- `DEFAULT_PAGE_SIZE` caps database list results before they enter the model
+  context.
+- Demo defaults disable thinking for routing and CRUD while retaining a small
+  analytics budget.
+- Agents retry transient Vertex AI 429 and 5xx responses with bounded backoff.
+- A shared presentation contract requires a final user-visible response after
+  every tool call and rejects exposed ADK event, trace, and function-call metadata.
+- Responses use consistent Markdown headings and tables across every specialist.
+- `/healthz` reports process liveness without dependency details.
+- `/readyz` reports expected, loaded, and missing agents and returns 503 until
+  required capabilities are available.
+
+Cloud Run reserves the public `/healthz` path. Hosted verification uses ADK's
+equivalent `/health` route; `/healthz` remains available inside the container.
+
+## Agent evaluation
+
+`tests/eval_cases.json` contains generic task, note, calendar, and analytics
+scenarios. It covers routing, expected tool use, relative dates, response
+structure, and confirmation before destructive operations.
+
+The deterministic evaluation gate validates the manifest without calling a
+model:
+
+```bash
+python setup/evaluate_contracts.py
+```
+
+Captured live results can be checked before promotion:
+
+```bash
+python setup/evaluate_contracts.py --results path/to/captured-results.json
+```
+
+Deployment smoke testing also verifies that semantic note search produces both
+the expected tool call and a grounded final response without internal metadata.
 
 ## Data and analytics
 
-AlloyDB stores typed task, note, and event records. Task status changes maintain
-`updated_at` and `completed_at`, allowing completion analytics to reflect actual
-operations. Notes use `google_ml.embedding('text-embedding-005', ...)` and exact
-cosine search for the small demo dataset.
+AlloyDB stores typed tasks, notes, and events. Task status changes maintain
+`updated_at` and `completed_at`. Notes use the configured `EMBEDDING_MODEL` and
+`EMBEDDING_DIMENSIONS` through `google_ml.embedding` and exact cosine search.
 
-Semantic retrieval uses exact cosine search, which keeps the small shared demo
-database simple and avoids an unused approximate-index dependency.
+BigQuery dataset and connection names come from `.env`. The `task_summary` and
+`daily_activity` views aggregate inside AlloyDB before returning small result sets
+through `EXTERNAL_QUERY`. Analytics tools are metadata and read-only SQL only.
 
-BigQuery views `productivity_analytics.task_summary` and
-`productivity_analytics.daily_activity` use `EXTERNAL_QUERY` through the
-`productivity_alloydb` connection. The analytics agent receives only metadata
-and read-only SQL MCP tools; there is no recurring seed or duplicate ingestion.
+## Security and operations
 
-## Security notes
-
-- Toolbox is never deployed with unauthenticated invocation.
-- The assistant supplies a refreshable Google-signed ID token to Toolbox.
-- Hosted BigQuery MCP access tokens refresh through ADC and the runtime service
-  identity has MCP Tool User plus read-only BigQuery permissions.
-- Secret Manager versions are resolved numerically at deployment.
-- Runtime identities do not receive Cloud Build, Artifact Registry admin, or
-  broad Storage Admin permissions.
+- Toolbox never allows unauthenticated invocation.
+- The assistant supplies refreshable Google-signed ID tokens to Toolbox.
+- Hosted BigQuery MCP access tokens refresh through ADC.
+- Secret values originate in the local SOT and are synchronized to Secret Manager;
+  deployments resolve numeric versions.
+- Runtime identities have no Cloud Build or Artifact Registry administration.
 - Delete requests require explicit conversational confirmation.
-- This demo has a shared synthetic datastore and does not provide tenant-level
-  isolation.
+- Successful health requests can be excluded from stored logs.
+- Request logs are structured JSON with a configurable correlation header,
+  method, path, status, and latency. Bodies, query strings, credentials, and
+  authentication headers are not logged by application middleware.
+- Uptime checks and categorized log metrics are independently configurable.
+- Artifact Registry keeps the configured number of recent images and deletes
+  versions older than the configured retention period.
 
-## Cleanup and cost control
+See `SECURITY.md` for dependency advisory exceptions.
 
-AlloyDB and Cloud Run can incur charges. Configure a project budget and remove
-the demo when judging is complete:
+## Cleanup
+
+Use `suspend` for a reusable environment. For complete irreversible removal:
 
 ```bash
 ./cleanup/cleanup_all.sh
 ```
 
-The cleanup script prints every target and requires typing the exact project ID.
-It removes the two services, migration job, dataset/connection, AlloyDB cluster,
-images, secrets, runtime service accounts, monitoring policies, uptime check,
-log metrics, project budget, peering, subnet, and VPC. Cloud resource deletion
-is not recoverable.
+Cleanup prints every target and requires the exact project ID. It removes services,
+migration and lifecycle jobs, scheduler triggers, analytics dataset and connection,
+AlloyDB, images, secrets, runtime identities, monitoring, budget,
+private-service peering, subnet, and VPC.

@@ -6,14 +6,22 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from google.cloud import bigquery
 from toolbox_core import ToolboxSyncClient
+
+REPO_ROOT = Path(__file__).parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from productivity_intelligence.response_validation import validate_visible_response  # noqa: E402
 
 
 def decode_rows(value: str) -> list[dict[str, Any]]:
@@ -106,6 +114,8 @@ def verify_chat_tool_completion(assistant_url: str, marker: str) -> None:
         final_text = " ".join(part.get("text", "") for part in parts if part.get("text"))
         assert "search_notes_semantic" in tool_names
         assert marker.lower() in final_text.lower(), "chat did not produce a grounded final answer"
+        violations = validate_visible_response("notes_agent", final_text)
+        assert not violations, f"chat response contract violations: {violations}"
     finally:
         request_json(session_url, method="DELETE")
 
@@ -117,6 +127,7 @@ def main() -> None:
     parser.add_argument("--toolbox-url", required=True)
     parser.add_argument("--service-account", required=True)
     parser.add_argument("--assistant-url")
+    parser.add_argument("--dataset", required=True)
     args = parser.parse_args()
 
     marker = f"smoke-{uuid.uuid4().hex[:10]}"
@@ -175,7 +186,7 @@ def main() -> None:
         bq = bigquery.Client(project=args.project)
         sql = f"""
         SELECT SUM(completed_tasks) AS completed
-        FROM `{args.project}.productivity_analytics.task_summary`
+        FROM `{args.project}.{args.dataset}.task_summary`
         WHERE date = CURRENT_DATE() AND priority = 'high'
         """
         for attempt in range(6):

@@ -9,7 +9,7 @@ SELECT
   'Silence notifications, choose one important task, and work without interruptions for 45 minutes.',
   'productivity,focus',
   google_ml.embedding(
-    'text-embedding-005',
+    '__EMBEDDING_MODEL__',
     'Focus routine Silence notifications, choose one important task, and work without interruptions for 45 minutes.'
   )::vector
 WHERE NOT EXISTS (SELECT 1 FROM notes WHERE title = 'Focus routine');

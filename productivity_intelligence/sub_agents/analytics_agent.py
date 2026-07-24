@@ -6,6 +6,7 @@ from google.adk.agents import LlmAgent
 
 from productivity_intelligence.config import settings
 from productivity_intelligence.model_config import gemini_generate_content_config
+from productivity_intelligence.response_contract import ANALYTICS_RESPONSE_CONTRACT
 from productivity_intelligence.status import capabilities
 from productivity_intelligence.tools import get_bigquery_mcp_toolset
 
@@ -25,15 +26,15 @@ def _build_analytics_agent() -> LlmAgent | None:
 
     agent = LlmAgent(
         model=settings.model,
-        generate_content_config=gemini_generate_content_config(),
+        generate_content_config=gemini_generate_content_config("analytics"),
         name="analytics_agent",
         description=(
             "Provides productivity analytics and insights by querying the live "
-            "AlloyDB-backed BigQuery views in `productivity_analytics`."
+            f"AlloyDB-backed BigQuery views in `{settings.bigquery_dataset}`."
         ),
         instruction=f"""You are a productivity analytics assistant.
 
-BigQuery dataset: `{settings.google_cloud_project}.productivity_analytics`
+BigQuery dataset: `{settings.google_cloud_project}.{settings.bigquery_dataset}`
 
 Approved views:
 - `task_summary`: date, priority, total_tasks, completed_tasks, pending_tasks,
@@ -43,10 +44,9 @@ Approved views:
 
 Use only read-only SQL against these two approved views. Never modify datasets,
 tables, views, connections, IAM policies, or rows. Present concise results and
-clearly identify periods with no activity. Never echo internal event numbers,
-trace IDs, tool-call IDs, or raw JSON. Start with `### Productivity analytics`.
-Use a compact Markdown table for multiple rows and bullets for a single summary.
-Format completion rates as percentages rather than decimal fractions.""",
+clearly identify periods with no activity.
+
+{ANALYTICS_RESPONSE_CONTRACT}""",
         tools=[bq_toolset],
     )
     capabilities.mark_loaded("analytics_agent")

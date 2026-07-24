@@ -8,6 +8,7 @@ from google.adk.agents import LlmAgent
 
 from productivity_intelligence.config import settings
 from productivity_intelligence.model_config import gemini_generate_content_config
+from productivity_intelligence.response_contract import COMMON_RESPONSE_CONTRACT
 from productivity_intelligence.status import capabilities
 from productivity_intelligence.sub_agents.analytics_agent import analytics_agent
 
@@ -106,12 +107,14 @@ For multi-step requests, execute each supported step sequentially by delegating
 to the appropriate specialist agent one at a time.
 
 Always be concise, confirm completed actions, and guide the user based on the
-capabilities that are actually available."""
+capabilities that are actually available.
+
+{COMMON_RESPONSE_CONTRACT}"""
 
 
 root_agent = LlmAgent(
     model=settings.model,
-    generate_content_config=gemini_generate_content_config(),
+    generate_content_config=gemini_generate_content_config("router"),
     name="productivity_orchestrator",
     description=_build_description(),
     instruction=_build_instruction(),

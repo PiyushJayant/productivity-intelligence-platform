@@ -5,6 +5,11 @@ import sys
 from fastapi.responses import JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
 
+from productivity_intelligence.observability import (
+    configure_logging,
+    request_observability_middleware,
+)
+
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 PACKAGED_AGENTS_DIR = os.path.join(APP_ROOT, "agents")
 AGENTS_DIR = os.environ.get(
@@ -14,12 +19,13 @@ AGENTS_DIR = os.environ.get(
 if AGENTS_DIR not in sys.path:
     sys.path.insert(0, AGENTS_DIR)
 
+configure_logging()
+
 # Force capability discovery during process startup. ADK otherwise imports an
 # agent lazily on the first conversational request, making readiness vacuous.
 from productivity_intelligence.agent import root_agent as _root_agent  # noqa: E402,F401
 from productivity_intelligence.status import capabilities  # noqa: E402
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 logger.info("Starting Productivity Intelligence Platform...")
@@ -28,6 +34,7 @@ app = get_fast_api_app(
     agents_dir=AGENTS_DIR,
     web=True,
 )
+app.middleware("http")(request_observability_middleware)
 logger.info("ADK FastAPI app created successfully")
 
 

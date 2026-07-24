@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS notes (
     title       TEXT NOT NULL,
     content     TEXT NOT NULL,
     tags        TEXT NOT NULL DEFAULT '',
-    embedding   VECTOR(768),
+    embedding   VECTOR(__EMBEDDING_DIMENSIONS__),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT notes_title_nonblank CHECK (btrim(title) <> ''),
     CONSTRAINT notes_content_nonblank CHECK (btrim(content) <> '')
@@ -94,16 +94,6 @@ DROP TRIGGER IF EXISTS tasks_maintain_timestamps ON tasks;
 CREATE TRIGGER tasks_maintain_timestamps
 BEFORE UPDATE ON tasks
 FOR EACH ROW EXECUTE FUNCTION maintain_task_timestamps();
-
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'productivity_app') THEN
-    CREATE ROLE productivity_app NOLOGIN;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'productivity_analytics') THEN
-    CREATE ROLE productivity_analytics NOLOGIN;
-  END IF;
-END $$;
 
 GRANT USAGE ON SCHEMA public, google_ml TO productivity_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON tasks, notes, events TO productivity_app;

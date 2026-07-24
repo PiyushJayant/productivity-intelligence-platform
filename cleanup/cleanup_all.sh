@@ -11,12 +11,12 @@ This will delete the Productivity Intelligence Platform resources from:
   Project: ${PROJECT_ID}
   Region:  ${REGION}
   Cloud Run services: ${ASSISTANT_SERVICE_NAME}, ${TOOLBOX_SERVICE_NAME}
-  Cloud Run job: ${MIGRATION_JOB_NAME}
+  Cloud Run jobs: ${MIGRATION_JOB_NAME}, ${LIFECYCLE_JOB_NAME}-resume, ${LIFECYCLE_JOB_NAME}-suspend
   AlloyDB cluster: ${ALLOYDB_CLUSTER}
-  BigQuery dataset/connection: productivity_analytics, ${BIGQUERY_CONNECTION_ID}
+  BigQuery dataset/connection: ${BIGQUERY_DATASET}, ${BIGQUERY_CONNECTION_ID}
   Artifact Registry: ${AR_REPO}
   Secrets: ${ADMIN_DB_SECRET}, ${APP_DB_SECRET}, ${ANALYTICS_DB_SECRET}
-  Runtime service accounts: ${ASSISTANT_SA}, ${TOOLBOX_SA}, ${MIGRATION_SA}
+  Runtime service accounts: ${ASSISTANT_SA}, ${TOOLBOX_SA}, ${MIGRATION_SA}, ${LIFECYCLE_SA}, ${SCHEDULER_SA}
   Monitoring: Productivity Intelligence policies, uptime check, and log metrics
   Billing budget: ${BUDGET_NAME}
   Network: ${VPC_NETWORK}/${VPC_SUBNET}
@@ -33,6 +33,12 @@ gcloud run services delete "${TOOLBOX_SERVICE_NAME}" --region="${REGION}" \
   --project="${PROJECT_ID}" --quiet 2>/dev/null || true
 gcloud run jobs delete "${MIGRATION_JOB_NAME}" --region="${REGION}" \
   --project="${PROJECT_ID}" --quiet 2>/dev/null || true
+for action in resume suspend; do
+  gcloud scheduler jobs delete "${LIFECYCLE_JOB_NAME}-${action}" \
+    --location="${REGION}" --project="${PROJECT_ID}" --quiet 2>/dev/null || true
+  gcloud run jobs delete "${LIFECYCLE_JOB_NAME}-${action}" --region="${REGION}" \
+    --project="${PROJECT_ID}" --quiet 2>/dev/null || true
+done
 
 while IFS= read -r policy; do
   [[ -z "${policy}" ]] || gcloud monitoring policies delete "${policy}" \
@@ -52,8 +58,10 @@ for metric in startup_failures toolbox_authorization_failures mcp_failures bigqu
   gcloud logging metrics delete "productivity_${metric}" --project="${PROJECT_ID}" \
     --quiet 2>/dev/null || true
 done
+gcloud logging sinks update _Default --project="${PROJECT_ID}" \
+  --remove-exclusions=productivity-health-success >/dev/null 2>&1 || true
 
-"${BQ_BIN}" rm -r -f -d "${PROJECT_ID}:productivity_analytics" 2>/dev/null || true
+"${BQ_BIN}" rm -r -f -d "${PROJECT_ID}:${BIGQUERY_DATASET}" 2>/dev/null || true
 "${BQ_BIN}" rm -f --connection --location="${REGION}" \
   "${PROJECT_ID}.${REGION}.${BIGQUERY_CONNECTION_ID}" 2>/dev/null || true
 gcloud alloydb clusters delete "${ALLOYDB_CLUSTER}" --region="${REGION}" \
@@ -78,7 +86,15 @@ for account in "${TOOLBOX_SA}" "${MIGRATION_SA}"; do
       --quiet >/dev/null 2>&1 || true
   done
 done
-for service_account in "${ASSISTANT_SA}" "${TOOLBOX_SA}" "${MIGRATION_SA}"; do
+for role in "projects/${PROJECT_ID}/roles/${LIFECYCLE_ROLE_ID}" roles/logging.logWriter; do
+  gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${LIFECYCLE_SA}" --role="${role}" --condition=None \
+    --quiet >/dev/null 2>&1 || true
+done
+gcloud iam roles delete "${LIFECYCLE_ROLE_ID}" --project="${PROJECT_ID}" \
+  --quiet >/dev/null 2>&1 || true
+for service_account in "${ASSISTANT_SA}" "${TOOLBOX_SA}" "${MIGRATION_SA}" \
+    "${LIFECYCLE_SA}" "${SCHEDULER_SA}"; do
   gcloud iam service-accounts delete "${service_account}" --project="${PROJECT_ID}" \
     --quiet 2>/dev/null || true
 done

@@ -7,13 +7,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 ACTION="${1:-full}"
-SEED_DEMO="${SEED_DEMO:-false}"
 BUILD_TAG_FILE="${REPO_ROOT}/.deploy-build-tag"
-if [[ -n "${BUILD_TAG:-}" ]]; then
-  BUILD_TAG="${BUILD_TAG}"
-elif [[ "${ACTION}" == "build" || "${ACTION}" == "full" ]]; then
-  BUILD_TAG="$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
-elif [[ "${ACTION}" =~ ^(toolbox|migrate|assistant|deploy)$ ]]; then
+if [[ "${ACTION}" == "build" || "${ACTION}" == "full" ]]; then
+  BUILD_TAG="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+elif [[ "${ACTION}" =~ ^(toolbox|migrate|assistant|lifecycle|deploy)$ ]]; then
   if [[ -f "${BUILD_TAG_FILE}" ]]; then
     BUILD_TAG="$(<"${BUILD_TAG_FILE}")"
   else
@@ -28,16 +25,25 @@ ASSISTANT_IMAGE="${IMAGE_ROOT}/${ASSISTANT_SERVICE_NAME}:${BUILD_TAG}"
 TOOLBOX_IMAGE="${IMAGE_ROOT}/${TOOLBOX_SERVICE_NAME}:${BUILD_TAG}"
 MIGRATION_IMAGE="${IMAGE_ROOT}/${MIGRATION_JOB_NAME}:${BUILD_TAG}"
 
+image_exists() {
+  gcloud artifacts docker images describe "$1" --project="${PROJECT_ID}" \
+    >/dev/null 2>&1
+}
+
+build_image() {
+  local image="$1" config="$2"
+  if [[ "${SKIP_EXISTING_IMAGES}" == "true" ]] && image_exists "${image}"; then
+    echo "[SKIP] Existing immutable image: ${image}"
+    return
+  fi
+  gcloud builds submit "${REPO_ROOT}" --project="${PROJECT_ID}" \
+    --config="${config}" --substitutions="_IMAGE_URI=${image}"
+}
+
 build_images() {
-  gcloud builds submit "${REPO_ROOT}" --project="${PROJECT_ID}" \
-    --config="${REPO_ROOT}/cloudbuild.toolbox.yaml" \
-    --substitutions="_IMAGE_URI=${TOOLBOX_IMAGE}"
-  gcloud builds submit "${REPO_ROOT}" --project="${PROJECT_ID}" \
-    --config="${REPO_ROOT}/cloudbuild.assistant.yaml" \
-    --substitutions="_IMAGE_URI=${ASSISTANT_IMAGE}"
-  gcloud builds submit "${REPO_ROOT}" --project="${PROJECT_ID}" \
-    --config="${REPO_ROOT}/cloudbuild.migrate.yaml" \
-    --substitutions="_IMAGE_URI=${MIGRATION_IMAGE}"
+  build_image "${TOOLBOX_IMAGE}" "${REPO_ROOT}/cloudbuild.toolbox.yaml"
+  build_image "${ASSISTANT_IMAGE}" "${REPO_ROOT}/cloudbuild.assistant.yaml"
+  build_image "${MIGRATION_IMAGE}" "${REPO_ROOT}/cloudbuild.migrate.yaml"
   printf '%s\n' "${BUILD_TAG}" >"${BUILD_TAG_FILE}"
 }
 
@@ -52,10 +58,13 @@ deploy_toolbox() {
   gcloud run deploy "${TOOLBOX_SERVICE_NAME}" --image="${TOOLBOX_IMAGE}" \
     --region="${REGION}" --project="${PROJECT_ID}" --platform=managed \
     --service-account="${TOOLBOX_SA}" --no-allow-unauthenticated --port=5000 \
-    --max-instances="${CLOUD_RUN_MAX_INSTANCES}" \
+    --cpu="${TOOLBOX_CPU}" --memory="${TOOLBOX_MEMORY}" \
+    --min="${TOOLBOX_MIN_INSTANCES}" --max="${TOOLBOX_MAX_INSTANCES}" \
+    --concurrency="${TOOLBOX_CONCURRENCY}" --timeout="${TOOLBOX_TIMEOUT}" \
+    --cpu-throttling --labels="${RESOURCE_LABELS}" \
     --network="${VPC_NETWORK}" --subnet="${VPC_SUBNET}" \
     --vpc-egress=private-ranges-only \
-    --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE},ALLOYDB_IP_TYPE=private,ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ALLOYDB_USER=${ALLOYDB_USER}" \
+    --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE},ALLOYDB_IP_TYPE=${ALLOYDB_IP_TYPE},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ALLOYDB_USER=${ALLOYDB_USER},EMBEDDING_MODEL=${EMBEDDING_MODEL},DEFAULT_PAGE_SIZE=${DEFAULT_PAGE_SIZE}" \
     --set-secrets="ALLOYDB_PASSWORD=${APP_DB_SECRET}:${app_secret_version}"
 
   gcloud run services add-iam-policy-binding "${TOOLBOX_SERVICE_NAME}" \
@@ -74,20 +83,82 @@ run_migration() {
     --region="${REGION}" --project="${PROJECT_ID}" \
     --service-account="${MIGRATION_SA}" --network="${VPC_NETWORK}" \
     --subnet="${VPC_SUBNET}" --vpc-egress=private-ranges-only \
-    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},SEED_DEMO=${SEED_DEMO}" \
+    --cpu="${MIGRATION_CPU}" --memory="${MIGRATION_MEMORY}" \
+    --labels="${RESOURCE_LABELS}" \
+    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ADMIN_DB_USER=${ADMIN_DB_USER},ALLOYDB_USER=${ALLOYDB_USER},ANALYTICS_DB_USER=${ANALYTICS_DB_USER},EMBEDDING_MODEL=${EMBEDDING_MODEL},EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS},SEED_DEMO=${SEED_DEMO}" \
     --set-secrets="ADMIN_DB_PASSWORD=${ADMIN_DB_SECRET}:${admin_version},APP_DB_PASSWORD=${APP_DB_SECRET}:${app_version},ANALYTICS_DB_PASSWORD=${ANALYTICS_DB_SECRET}:${analytics_version}" \
-    --max-retries=0 --task-timeout=15m
+    --max-retries=0 --task-timeout="${MIGRATION_TIMEOUT}s"
   gcloud run jobs execute "${MIGRATION_JOB_NAME}" --region="${REGION}" \
     --project="${PROJECT_ID}" --wait
 }
 
-ensure_bigquery_connection() {
-  if "${BQ_BIN}" show --connection --location="${REGION}" \
-      --project_id="${PROJECT_ID}" "${BIGQUERY_CONNECTION_ID}" >/dev/null 2>&1; then
+ensure_scheduler_job() {
+  local scheduler_job="$1" run_job="$2" schedule="$3"
+  local run_uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${run_job}:run"
+  local -a shared_args=(
+    "--location=${REGION}"
+    "--project=${PROJECT_ID}"
+    "--schedule=${schedule}"
+    "--time-zone=${LIFECYCLE_TIMEZONE}"
+    "--uri=${run_uri}"
+    "--http-method=POST"
+    "--message-body={}"
+    "--oauth-service-account-email=${SCHEDULER_SA}"
+    "--oauth-token-scope=https://www.googleapis.com/auth/cloud-platform"
+    "--max-retry-attempts=2"
+    "--attempt-deadline=60s"
+  )
+  if gcloud scheduler jobs describe "${scheduler_job}" --location="${REGION}" \
+      --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud scheduler jobs update http "${scheduler_job}" "${shared_args[@]}" \
+      --update-headers=Content-Type=application/json
+  else
+    gcloud scheduler jobs create http "${scheduler_job}" "${shared_args[@]}" \
+      --headers=Content-Type=application/json
+  fi
+}
+
+deploy_lifecycle_automation() {
+  local action job_name scheduler_job
+  if [[ "${ENABLE_SCHEDULED_LIFECYCLE}" != "true" ]]; then
+    for action in resume suspend; do
+      scheduler_job="${LIFECYCLE_JOB_NAME}-${action}"
+      gcloud scheduler jobs delete "${scheduler_job}" --location="${REGION}" \
+        --project="${PROJECT_ID}" --quiet >/dev/null 2>&1 || true
+      gcloud run jobs delete "${scheduler_job}" --region="${REGION}" \
+        --project="${PROJECT_ID}" --quiet >/dev/null 2>&1 || true
+    done
+    echo "[SKIP] Scheduled lifecycle automation is disabled in .env."
     return
   fi
 
-  local payload response password_file token resource
+  for action in resume suspend; do
+    job_name="${LIFECYCLE_JOB_NAME}-${action}"
+    gcloud run jobs deploy "${job_name}" --image="${MIGRATION_IMAGE}" \
+      --region="${REGION}" --project="${PROJECT_ID}" \
+      --service-account="${LIFECYCLE_SA}" --command=python \
+      --args="lifecycle.py,--action=${action}" \
+      --cpu=1 --memory=512Mi --max-retries=1 --task-timeout=300s \
+      --labels="${RESOURCE_LABELS}" \
+      --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE}"
+    gcloud run jobs add-iam-policy-binding "${job_name}" --region="${REGION}" \
+      --project="${PROJECT_ID}" --member="serviceAccount:${SCHEDULER_SA}" \
+      --role=roles/run.invoker --quiet >/dev/null
+  done
+  ensure_scheduler_job "${LIFECYCLE_JOB_NAME}-resume" \
+    "${LIFECYCLE_JOB_NAME}-resume" "${LIFECYCLE_RESUME_CRON}"
+  ensure_scheduler_job "${LIFECYCLE_JOB_NAME}-suspend" \
+    "${LIFECYCLE_JOB_NAME}-suspend" "${LIFECYCLE_SUSPEND_CRON}"
+  echo "[OK] Scheduled AlloyDB lifecycle automation configured."
+}
+
+ensure_bigquery_connection() {
+  local payload response password_file token resource connection_url
+  local connection_exists="false"
+  if "${BQ_BIN}" show --connection --location="${REGION}" \
+      --project_id="${PROJECT_ID}" "${BIGQUERY_CONNECTION_ID}" >/dev/null 2>&1; then
+    connection_exists="true"
+  fi
   payload="$(mktemp)"
   response="$(mktemp)"
   password_file="$(mktemp)"
@@ -116,10 +187,18 @@ with open(path, "w", encoding="utf-8") as stream:
     }, stream)
 PY
   token="$(gcloud auth print-access-token)"
-  curl -fsS -X POST \
-    "https://bigqueryconnection.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/connections?connectionId=${BIGQUERY_CONNECTION_ID}" \
-    -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
-    --data-binary "@${payload}" >"${response}"
+  connection_url="https://bigqueryconnection.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/connections"
+  if [[ "${connection_exists}" == "true" ]]; then
+    curl -fsS -X PATCH \
+      "${connection_url}/${BIGQUERY_CONNECTION_ID}?updateMask=friendlyName,configuration" \
+      -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
+      --data-binary "@${payload}" >"${response}"
+  else
+    curl -fsS -X POST \
+      "${connection_url}?connectionId=${BIGQUERY_CONNECTION_ID}" \
+      -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
+      --data-binary "@${payload}" >"${response}"
+  fi
   unset token
 
   local connection_sa
@@ -156,15 +235,88 @@ deploy_assistant() {
   gcloud run deploy "${ASSISTANT_SERVICE_NAME}" --image="${ASSISTANT_IMAGE}" \
     --region="${REGION}" --project="${PROJECT_ID}" --platform=managed \
     --service-account="${ASSISTANT_SA}" --allow-unauthenticated \
-    --memory=1Gi --timeout=300 --max-instances="${CLOUD_RUN_MAX_INSTANCES}" \
+    --cpu="${ASSISTANT_CPU}" --memory="${ASSISTANT_MEMORY}" \
+    --min="${ASSISTANT_MIN_INSTANCES}" --max="${ASSISTANT_MAX_INSTANCES}" \
+    --concurrency="${ASSISTANT_CONCURRENCY}" --timeout="${ASSISTANT_TIMEOUT}" \
+    --cpu-throttling --labels="${RESOURCE_LABELS}" \
     "${traffic_args[@]}" \
-    --set-env-vars="APP_MODE=${APP_MODE},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},GOOGLE_GENAI_USE_VERTEXAI=true,MODEL=${MODEL},TOOLBOX_URL=${toolbox_url},TOOLBOX_AUDIENCE=${toolbox_url},BIGQUERY_CONNECTION_ID=${BIGQUERY_CONNECTION_ID}"
+    --set-env-vars="APP_MODE=${APP_MODE},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI},MODEL=${MODEL},EMBEDDING_MODEL=${EMBEDDING_MODEL},TOOLBOX_URL=${toolbox_url},TOOLBOX_AUDIENCE=${toolbox_url},BIGQUERY_MCP_URL=${BIGQUERY_MCP_URL},BIGQUERY_DATASET=${BIGQUERY_DATASET},BIGQUERY_CONNECTION_ID=${BIGQUERY_CONNECTION_ID},ROUTER_MAX_OUTPUT_TOKENS=${ROUTER_MAX_OUTPUT_TOKENS},ROUTER_THINKING_BUDGET=${ROUTER_THINKING_BUDGET},SPECIALIST_MAX_OUTPUT_TOKENS=${SPECIALIST_MAX_OUTPUT_TOKENS},SPECIALIST_THINKING_BUDGET=${SPECIALIST_THINKING_BUDGET},ANALYTICS_MAX_OUTPUT_TOKENS=${ANALYTICS_MAX_OUTPUT_TOKENS},ANALYTICS_THINKING_BUDGET=${ANALYTICS_THINKING_BUDGET},MODEL_TEMPERATURE=${MODEL_TEMPERATURE},DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE},DEFAULT_PAGE_SIZE=${DEFAULT_PAGE_SIZE},LOG_LEVEL=${LOG_LEVEL},STRUCTURED_LOGGING=${STRUCTURED_LOGGING},ENABLE_REQUEST_LOGGING=${ENABLE_REQUEST_LOGGING},REQUEST_ID_HEADER=${REQUEST_ID_HEADER}"
 }
 
 setup_analytics() {
   GOOGLE_CLOUD_PROJECT="${PROJECT_ID}" REGION="${REGION}" \
+    BIGQUERY_DATASET="${BIGQUERY_DATASET}" \
     BIGQUERY_CONNECTION_ID="${BIGQUERY_CONNECTION_ID}" \
     "${PYTHON_BIN}" "${SCRIPT_DIR}/bigquery_setup.py"
+}
+
+alloydb_details() {
+  gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
+    --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" --project="${PROJECT_ID}" \
+    --format='value(state,activationPolicy,machineConfig.machineType,availabilityType)'
+}
+
+wait_for_alloydb_state() {
+  local expected="$1" elapsed=0 state=""
+  while (( elapsed < ALLOYDB_STATE_TIMEOUT_SECONDS )); do
+    state="$(gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" --project="${PROJECT_ID}" \
+      --format='value(state)' 2>/dev/null || true)"
+    [[ "${state}" == "${expected}" ]] && return
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+  echo "Error: AlloyDB did not reach ${expected} within ${ALLOYDB_STATE_TIMEOUT_SECONDS}s." >&2
+  exit 1
+}
+
+resume_alloydb() {
+  local state activation _machine _availability
+  read -r state activation _machine _availability < <(alloydb_details)
+  if [[ "${state}" == "READY" && "${activation}" == "ALWAYS" ]]; then
+    echo "[OK] AlloyDB is already running."
+    return
+  fi
+  gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
+    --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+    --project="${PROJECT_ID}" --activation-policy=ALWAYS --quiet
+  wait_for_alloydb_state READY
+  echo "[OK] AlloyDB resumed."
+}
+
+suspend_alloydb() {
+  local state activation _machine _availability confirmation
+  if [[ "${COST_PROFILE}" == "production" ]]; then
+    read -r -p "Type ${PROJECT_ID} to suspend the production database: " confirmation
+    [[ "${confirmation}" == "${PROJECT_ID}" ]] || {
+      echo "Suspension cancelled."
+      exit 1
+    }
+  fi
+  read -r state activation _machine _availability < <(alloydb_details)
+  if [[ "${state}" == "STOPPED" || "${activation}" == "NEVER" ]]; then
+    echo "[OK] AlloyDB is already suspended."
+    return
+  fi
+  gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
+    --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+    --project="${PROJECT_ID}" --activation-policy=NEVER --quiet
+  wait_for_alloydb_state STOPPED
+  echo "[OK] AlloyDB suspended; instance compute billing is stopped."
+}
+
+cost_status() {
+  local state activation machine availability monthly
+  read -r state activation machine availability < <(alloydb_details)
+  monthly="$("${PYTHON_BIN}" -c \
+    "print(f'{float(\"${ALLOYDB_ESTIMATED_HOURLY_USD}\") * 730:.2f}')")"
+  cat <<EOF
+Cost profile: ${COST_PROFILE}
+Project: ${PROJECT_ID}
+AlloyDB: state=${state}, activation=${activation}, machine=${machine}, availability=${availability}
+Configured running estimate: USD ${ALLOYDB_ESTIMATED_HOURLY_USD}/hour (USD ${monthly}/730-hour month)
+Cloud Run bounds: assistant ${ASSISTANT_MIN_INSTANCES}-${ASSISTANT_MAX_INSTANCES}, toolbox ${TOOLBOX_MIN_INSTANCES}-${TOOLBOX_MAX_INSTANCES}
+EOF
 }
 
 verify_candidate() {
@@ -196,13 +348,25 @@ verify_candidate() {
   readiness_file="$(mktemp)"
   trap 'rm -f "${readiness_file}"' RETURN
   curl -fsS "${assistant_url}/readyz" >"${readiness_file}"
-  "${PYTHON_BIN}" - "${readiness_file}" <<'PY'
+  "${PYTHON_BIN}" - "${readiness_file}" "${APP_MODE}" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
-expected = ["analytics_agent", "calendar_agent", "notes_agent", "task_agent"]
+expected = (
+    ["analytics_agent"]
+    if sys.argv[2] == "prototype"
+    else ["analytics_agent", "calendar_agent", "notes_agent", "task_agent"]
+)
 if not data.get("ready") or sorted(data.get("loaded_agents", [])) != expected:
     raise SystemExit(f"candidate readiness mismatch: {data}")
 PY
+  if [[ "${APP_MODE}" == "full" ]]; then
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/smoke_test.py" \
+      --project="${PROJECT_ID}" --region="${REGION}" \
+      --toolbox-url="${toolbox_url}" --service-account="${ASSISTANT_SA}" \
+      --assistant-url="${assistant_url}" --dataset="${BIGQUERY_DATASET}"
+  else
+    echo "[SKIP] CRUD smoke checks are unavailable in prototype mode."
+  fi
   echo "[OK] Candidate verified: ${assistant_url}"
 }
 
@@ -229,28 +393,47 @@ case "${ACTION}" in
   preflight) ;;
   provision) "${SCRIPT_DIR}/provision.sh" ;;
   build) build_images ;;
-  migrate) run_migration ;;
+  resume) resume_alloydb ;;
+  suspend) suspend_alloydb ;;
+  cost-status) cost_status ;;
+  migrate) resume_alloydb; run_migration ;;
+  lifecycle) deploy_lifecycle_automation ;;
   toolbox) deploy_toolbox ;;
   assistant) deploy_assistant ;;
   analytics) ensure_bigquery_connection; setup_analytics ;;
-  deploy) run_migration; deploy_toolbox; ensure_bigquery_connection; setup_analytics; deploy_assistant ;;
+  deploy)
+    resume_alloydb
+    run_migration
+    deploy_toolbox
+    ensure_bigquery_connection
+    setup_analytics
+    deploy_assistant
+    deploy_lifecycle_automation
+    ;;
   verify) setup_analytics; verify_candidate ;;
   promote) promote ;;
   rollback) rollback "$@" ;;
   full)
     "${SCRIPT_DIR}/provision.sh"
     build_images
+    resume_alloydb
     run_migration
     deploy_toolbox
     ensure_bigquery_connection
     setup_analytics
     deploy_assistant
+    deploy_lifecycle_automation
     verify_candidate
     promote
-    "${SCRIPT_DIR}/monitoring.sh"
+    if [[ "${ENABLE_MONITORING}" == "true" ]]; then
+      "${SCRIPT_DIR}/monitoring.sh"
+    fi
+    if [[ "${AUTO_SUSPEND_AFTER_DEPLOY}" == "true" ]]; then
+      suspend_alloydb
+    fi
     ;;
   *)
-    echo "Usage: $0 [preflight|provision|build|toolbox|migrate|analytics|assistant|deploy|verify|promote|rollback]" >&2
+    echo "Usage: $0 [preflight|provision|build|resume|suspend|cost-status|toolbox|migrate|analytics|assistant|lifecycle|deploy|verify|promote|rollback|full]" >&2
     exit 1
     ;;
 esac

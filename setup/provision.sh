@@ -15,6 +15,7 @@ APIS=(
   bigqueryconnection.googleapis.com
   billingbudgets.googleapis.com
   cloudbuild.googleapis.com
+  cloudscheduler.googleapis.com
   compute.googleapis.com
   iam.googleapis.com
   monitoring.googleapis.com
@@ -27,13 +28,28 @@ gcloud services enable "${APIS[@]}" --project="${PROJECT_ID}"
 
 BILLING_ACCOUNT="$(gcloud billing projects describe "${PROJECT_ID}" \
   --format='value(billingAccountName.basename())')"
-if ! gcloud billing budgets list --billing-account="${BILLING_ACCOUNT}" \
-    --filter="displayName='${BUDGET_NAME}'" --format='value(name)' | grep -q .; then
+IFS=',' read -r -a budget_thresholds <<<"${BUDGET_THRESHOLDS}"
+budget_resource="$(gcloud billing budgets list --billing-account="${BILLING_ACCOUNT}" \
+  --filter="displayName='${BUDGET_NAME}'" --format='value(name)' --limit=1)"
+if [[ -z "${budget_resource}" ]]; then
+  threshold_args=()
+  for threshold in "${budget_thresholds[@]}"; do
+    threshold_args+=(--threshold-rule="percent=${threshold}")
+  done
   gcloud billing budgets create --billing-account="${BILLING_ACCOUNT}" \
     --display-name="${BUDGET_NAME}" --budget-amount="${BUDGET_AMOUNT}" \
     --filter-projects="projects/${PROJECT_ID}" \
-    --threshold-rule=percent=0.50 --threshold-rule=percent=0.90 \
-    --threshold-rule=percent=1.00
+    "${threshold_args[@]}"
+else
+  threshold_args=(--clear-threshold-rules)
+  for threshold in "${budget_thresholds[@]}"; do
+    threshold_args+=(--add-threshold-rule="percent=${threshold}")
+  done
+  gcloud billing budgets update "${budget_resource##*/}" \
+    --billing-account="${BILLING_ACCOUNT}" \
+    --budget-amount="${BUDGET_AMOUNT}" \
+    --filter-projects="projects/${PROJECT_ID}" \
+    "${threshold_args[@]}"
 fi
 
 ensure_service_account() {
@@ -58,6 +74,8 @@ grant_project_role() {
 ensure_service_account "${ASSISTANT_SA_NAME}" "Productivity Intelligence runtime"
 ensure_service_account "${TOOLBOX_SA_NAME}" "Productivity Intelligence Toolbox"
 ensure_service_account "${MIGRATION_SA_NAME}" "Productivity Intelligence migrations"
+ensure_service_account "${LIFECYCLE_SA_NAME}" "Productivity Intelligence lifecycle"
+ensure_service_account "${SCHEDULER_SA_NAME}" "Productivity Intelligence scheduler"
 DEPLOYER_ACCOUNT="$(gcloud config get-value account 2>/dev/null)"
 if [[ "${DEPLOYER_ACCOUNT}" == *".gserviceaccount.com" ]]; then
   DEPLOYER_MEMBER="serviceAccount:${DEPLOYER_ACCOUNT}"
@@ -67,8 +85,26 @@ fi
 gcloud iam service-accounts add-iam-policy-binding "${ASSISTANT_SA}" \
   --project="${PROJECT_ID}" --member="${DEPLOYER_MEMBER}" \
   --role=roles/iam.serviceAccountTokenCreator --quiet >/dev/null
+gcloud iam service-accounts add-iam-policy-binding "${SCHEDULER_SA}" \
+  --project="${PROJECT_ID}" --member="${DEPLOYER_MEMBER}" \
+  --role=roles/iam.serviceAccountUser --quiet >/dev/null
 PROJECT_IAM="$(gcloud projects get-iam-policy "${PROJECT_ID}" --flatten='bindings[].members' \
   --format='value(bindings.role,bindings.members)')"
+
+if gcloud iam roles describe "${LIFECYCLE_ROLE_ID}" --project="${PROJECT_ID}" \
+    >/dev/null 2>&1; then
+  gcloud iam roles update "${LIFECYCLE_ROLE_ID}" --project="${PROJECT_ID}" \
+    --title="Productivity AlloyDB lifecycle" \
+    --description="Start and stop only the configured productivity AlloyDB instance" \
+    --permissions=alloydb.instances.get,alloydb.instances.update \
+    --stage=GA >/dev/null
+else
+  gcloud iam roles create "${LIFECYCLE_ROLE_ID}" --project="${PROJECT_ID}" \
+    --title="Productivity AlloyDB lifecycle" \
+    --description="Start and stop only the configured productivity AlloyDB instance" \
+    --permissions=alloydb.instances.get,alloydb.instances.update \
+    --stage=GA >/dev/null
+fi
 
 for role in roles/aiplatform.user roles/mcp.toolUser roles/bigquery.jobUser \
   roles/bigquery.dataViewer roles/bigquery.connectionUser roles/logging.logWriter \
@@ -79,14 +115,17 @@ for role in roles/alloydb.client roles/logging.logWriter; do
   grant_project_role "${TOOLBOX_SA}" "${role}"
   grant_project_role "${MIGRATION_SA}" "${role}"
 done
+for role in "projects/${PROJECT_ID}/roles/${LIFECYCLE_ROLE_ID}" roles/logging.logWriter; do
+  grant_project_role "${LIFECYCLE_SA}" "${role}"
+done
 
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
 ALLOYDB_SERVICE_AGENT="service-${PROJECT_NUMBER}@gcp-sa-alloydb.iam.gserviceaccount.com"
 grant_project_role "${ALLOYDB_SERVICE_AGENT}" roles/aiplatform.user
 
-ensure_secret "${ADMIN_DB_SECRET}"
-ensure_secret "${APP_DB_SECRET}"
-ensure_secret "${ANALYTICS_DB_SECRET}"
+ensure_secret_from_env "${ADMIN_DB_SECRET}" "${ADMIN_DB_PASSWORD}"
+ensure_secret_from_env "${APP_DB_SECRET}" "${APP_DB_PASSWORD}"
+ensure_secret_from_env "${ANALYTICS_DB_SECRET}" "${ANALYTICS_DB_PASSWORD}"
 
 gcloud secrets add-iam-policy-binding "${APP_DB_SECRET}" --project="${PROJECT_ID}" \
   --member="serviceAccount:${TOOLBOX_SA}" --role=roles/secretmanager.secretAccessor \
@@ -124,18 +163,37 @@ if ! gcloud artifacts repositories describe "${AR_REPO}" --location="${REGION}" 
     --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud artifacts repositories create "${AR_REPO}" --repository-format=docker \
     --location="${REGION}" --description="Productivity Intelligence Platform images" \
+    --labels="${RESOURCE_LABELS}" \
     --project="${PROJECT_ID}"
 fi
+cleanup_policy_file="$(mktemp)"
+trap 'rm -f "${cleanup_policy_file}"' EXIT
+cat >"${cleanup_policy_file}" <<EOF
+[
+  {
+    "name": "delete-old-images",
+    "action": {"type": "Delete"},
+    "condition": {"tagState": "any", "olderThan": "${ARTIFACT_RETENTION_DAYS}d"}
+  },
+  {
+    "name": "keep-recent-images",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": ${ARTIFACT_KEEP_COUNT}}
+  }
+]
+EOF
+gcloud artifacts repositories set-cleanup-policies "${AR_REPO}" \
+  --location="${REGION}" --project="${PROJECT_ID}" \
+  --policy="${cleanup_policy_file}" --no-dry-run
+rm -f "${cleanup_policy_file}"
+trap - EXIT
 
 if ! gcloud alloydb clusters describe "${ALLOYDB_CLUSTER}" --region="${REGION}" \
     --project="${PROJECT_ID}" >/dev/null 2>&1; then
   flags_file="$(mktemp)"
   chmod 600 "${flags_file}"
   trap 'rm -f "${flags_file}"' EXIT
-  admin_password="$(gcloud secrets versions access "$(secret_version "${ADMIN_DB_SECRET}")" \
-    --secret="${ADMIN_DB_SECRET}" --project="${PROJECT_ID}")"
-  printf '%s\n' "--password: ${admin_password}" >"${flags_file}"
-  unset admin_password
+  printf '%s\n' "--password: ${ADMIN_DB_PASSWORD}" >"${flags_file}"
   gcloud alloydb clusters create "${ALLOYDB_CLUSTER}" --region="${REGION}" \
     --network="projects/${PROJECT_ID}/global/networks/${VPC_NETWORK}" \
     --allocated-ip-range-name="${PSA_RANGE_NAME}" --project="${PROJECT_ID}" \
@@ -143,23 +201,58 @@ if ! gcloud alloydb clusters describe "${ALLOYDB_CLUSTER}" --region="${REGION}" 
   rm -f "${flags_file}"
   trap - EXIT
 fi
+admin_flags_file="$(mktemp)"
+chmod 600 "${admin_flags_file}"
+trap 'rm -f "${admin_flags_file}"' EXIT
+printf '%s\n' "--password: ${ADMIN_DB_PASSWORD}" >"${admin_flags_file}"
+gcloud alloydb users set-password "${ADMIN_DB_USER}" \
+  --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+  --project="${PROJECT_ID}" --flags-file="${admin_flags_file}" >/dev/null
+rm -f "${admin_flags_file}"
+trap - EXIT
+
 if ! gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
     --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
     --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud alloydb instances create "${ALLOYDB_INSTANCE}" \
     --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" --instance-type=PRIMARY \
-    --availability-type="${ALLOYDB_AVAILABILITY_TYPE}" --cpu-count=2 \
+    --availability-type="${ALLOYDB_AVAILABILITY_TYPE}" \
+    --machine-type="${ALLOYDB_MACHINE_TYPE}" \
     --project="${PROJECT_ID}"
+  if [[ "${ALLOYDB_ACTIVATION_POLICY}" == "NEVER" ]]; then
+    gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --activation-policy=NEVER --project="${PROJECT_ID}" --quiet
+  fi
 else
-  current_availability="$(gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
+  read -r current_availability current_machine current_activation < <(
+    gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
     --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" --project="${PROJECT_ID}" \
-    --format='value(availabilityType)')"
+    --format='value(availabilityType,machineConfig.machineType,activationPolicy)'
+  )
+  if [[ "${current_machine}" != "${ALLOYDB_MACHINE_TYPE}" &&
+      "${ALLOW_ALLOYDB_RESIZE}" != "true" ]]; then
+    echo "Error: deployed AlloyDB machine '${current_machine}' differs from" >&2
+    echo "'${ALLOYDB_MACHINE_TYPE}'. Set ALLOW_ALLOYDB_RESIZE=true in .env to resize." >&2
+    exit 1
+  fi
   if [[ "${current_availability}" != "${ALLOYDB_AVAILABILITY_TYPE}" ]]; then
     gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
       --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
       --availability-type="${ALLOYDB_AVAILABILITY_TYPE}" --project="${PROJECT_ID}" \
       --quiet
   fi
+  if [[ "${current_machine}" != "${ALLOYDB_MACHINE_TYPE}" ]]; then
+    gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --machine-type="${ALLOYDB_MACHINE_TYPE}" --project="${PROJECT_ID}" --quiet
+  fi
+  if [[ "${current_activation}" != "${ALLOYDB_ACTIVATION_POLICY}" ]]; then
+    gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --activation-policy="${ALLOYDB_ACTIVATION_POLICY}" \
+      --project="${PROJECT_ID}" --quiet
+  fi
 fi
 
-echo "[OK] Infrastructure provisioned in ${PROJECT_ID}/${REGION}"
+echo "[OK] Infrastructure provisioned in ${PROJECT_ID}/${REGION} (${COST_PROFILE})"

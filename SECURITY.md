@@ -20,3 +20,28 @@ available. Compensating controls for this public synthetic-data demo are:
 
 Re-run `pip-audit -r requirements.txt` without ignores during every dependency
 upgrade review.
+
+## Local configuration secret boundary
+
+The git-ignored `.env` is intentionally the single deployment source of truth and
+contains database password values. Treat it as a secret:
+
+- Create it with `python setup/init_env.py --project PROJECT_ID`.
+- Never commit, upload, print, attach, or paste it into logs or support requests.
+- Store workstation backups only in an approved encrypted secret store.
+- Use independent values for administrator, application, and analytics users.
+- Rotate a password by editing only `.env` and rerunning provisioning and migration;
+  provisioning adds a Secret Manager version and Cloud Run pins the resolved number.
+- Delete `.env` securely when the local deployment authority is retired.
+
+Cloud Run never receives these values as ordinary environment variables. Toolbox
+and migration revisions refer to Secret Manager numeric versions.
+
+## Lifecycle automation boundary
+
+Optional scheduled lifecycle automation uses separate scheduler and lifecycle
+identities. The scheduler can invoke only the lifecycle Cloud Run Jobs. The
+lifecycle identity receives a project custom role containing only
+`alloydb.instances.get` and `alloydb.instances.update`; it does not receive the
+predefined AlloyDB Administrator role. The job implementation only changes the
+configured instance activation policy and never deletes database resources.

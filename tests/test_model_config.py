@@ -20,3 +20,16 @@ def test_each_agent_gets_an_independent_request_config():
     assert first is not second
     assert first.http_options is not second.http_options
     assert first.http_options.retry_options is not second.http_options.retry_options
+
+
+def test_generation_cost_budgets_are_role_specific():
+    router = gemini_generate_content_config("router")
+    specialist = gemini_generate_content_config("specialist")
+    analytics = gemini_generate_content_config("analytics")
+
+    assert router.max_output_tokens == 512
+    assert router.thinking_config.thinking_budget == 0
+    assert specialist.max_output_tokens == 768
+    assert specialist.thinking_config.thinking_budget == 0
+    assert analytics.max_output_tokens == 1024
+    assert analytics.thinking_config.thinking_budget == 256
