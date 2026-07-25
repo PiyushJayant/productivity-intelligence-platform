@@ -38,7 +38,7 @@ def _is_safe_user_boundary(content: Any) -> bool:
     )
 
 
-def compact_specialist_history(_context: Any, llm_request: Any) -> None:
+def compact_specialist_history(callback_context: Any, llm_request: Any) -> None:
     """Bound specialist history while retaining a complete current interaction.
 
     ADK converts prior transfers and results into synthetic context messages.
@@ -47,6 +47,7 @@ def compact_specialist_history(_context: Any, llm_request: Any) -> None:
     prompt content.
     """
 
+    del callback_context
     contents = list(getattr(llm_request, "contents", None) or [])
     maximum = settings.agent_context_max_events
     if len(contents) <= maximum:
@@ -66,7 +67,7 @@ def compact_specialist_history(_context: Any, llm_request: Any) -> None:
     )
 
 
-def record_model_usage(context: Any, llm_response: Any) -> None:
+def record_model_usage(callback_context: Any, llm_response: Any) -> None:
     """Log token counters and agent name without recording prompt content."""
 
     usage = getattr(llm_response, "usage_metadata", None)
@@ -75,7 +76,7 @@ def record_model_usage(context: Any, llm_response: Any) -> None:
     LOGGER.info(
         "model response completed",
         extra={
-            "agent": getattr(context, "agent_name", None),
+            "agent": getattr(callback_context, "agent_name", None),
             "prompt_tokens": getattr(usage, "prompt_token_count", None),
             "output_tokens": getattr(usage, "candidates_token_count", None),
             "cached_tokens": getattr(usage, "cached_content_token_count", None),
