@@ -49,6 +49,32 @@ CREATE TABLE IF NOT EXISTS events (
     CONSTRAINT events_duration_positive CHECK (duration_minutes > 0)
 );
 
+-- Privacy-minimized, append-only activity facts preserve analytics when a user
+-- hard-deletes operational content. Titles, descriptions, note text, and event
+-- details are intentionally never copied into this ledger.
+CREATE TABLE IF NOT EXISTS activity_events (
+    id           BIGSERIAL PRIMARY KEY,
+    entity_type  TEXT NOT NULL,
+    entity_id    BIGINT NOT NULL,
+    event_type   TEXT NOT NULL,
+    priority     TEXT,
+    is_synthetic BOOLEAN NOT NULL DEFAULT FALSE,
+    occurred_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT activity_entity_type_valid
+      CHECK (entity_type IN ('task', 'note', 'event')),
+    CONSTRAINT activity_event_type_valid CHECK (
+      event_type IN (
+        'task_created', 'task_pending', 'task_in_progress', 'task_completed',
+        'task_deleted', 'note_created', 'note_deleted',
+        'event_scheduled', 'event_deleted'
+      )
+    ),
+    CONSTRAINT activity_priority_valid
+      CHECK (priority IS NULL OR priority IN ('low', 'medium', 'high'))
+);
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS
+  is_synthetic BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- Upgrade databases created by the original prototype.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
@@ -102,6 +128,152 @@ CREATE TRIGGER tasks_maintain_timestamps
 BEFORE UPDATE ON tasks
 FOR EACH ROW EXECUTE FUNCTION maintain_task_timestamps();
 
+CREATE OR REPLACE FUNCTION record_task_activity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  status_event TEXT;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO activity_events(
+      entity_type, entity_id, event_type, priority, is_synthetic, occurred_at
+    ) VALUES (
+      'task', NEW.id, 'task_created', NEW.priority,
+      NEW.title LIKE 'smoke-%', NEW.created_at
+    )
+    ON CONFLICT DO NOTHING;
+    RETURN NEW;
+  ELSIF TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status THEN
+    status_event = CASE NEW.status
+      WHEN 'pending' THEN 'task_pending'
+      WHEN 'in_progress' THEN 'task_in_progress'
+      WHEN 'done' THEN 'task_completed'
+    END;
+    INSERT INTO activity_events(
+      entity_type, entity_id, event_type, priority, is_synthetic, occurred_at
+    ) VALUES (
+      'task', NEW.id, status_event, NEW.priority,
+      NEW.title LIKE 'smoke-%',
+      COALESCE(NEW.completed_at, NEW.updated_at, CURRENT_TIMESTAMP)
+    )
+    ON CONFLICT DO NOTHING;
+    RETURN NEW;
+  ELSIF TG_OP = 'DELETE' THEN
+    INSERT INTO activity_events(
+      entity_type, entity_id, event_type, priority, is_synthetic, occurred_at
+    ) VALUES (
+      'task', OLD.id, 'task_deleted', OLD.priority,
+      OLD.title LIKE 'smoke-%', CURRENT_TIMESTAMP
+    )
+    ON CONFLICT DO NOTHING;
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION record_note_activity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO activity_events(
+      entity_type, entity_id, event_type, is_synthetic, occurred_at
+    ) VALUES (
+      'note', NEW.id, 'note_created', NEW.title LIKE 'smoke-%', NEW.created_at
+    )
+    ON CONFLICT DO NOTHING;
+    RETURN NEW;
+  END IF;
+  INSERT INTO activity_events(
+    entity_type, entity_id, event_type, is_synthetic
+  ) VALUES ('note', OLD.id, 'note_deleted', OLD.title LIKE 'smoke-%')
+  ON CONFLICT DO NOTHING;
+  RETURN OLD;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION record_calendar_activity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO activity_events(
+      entity_type, entity_id, event_type, is_synthetic, occurred_at
+    ) VALUES (
+      'event', NEW.id, 'event_scheduled',
+      NEW.title LIKE 'smoke-%', NEW.created_at
+    )
+    ON CONFLICT DO NOTHING;
+    RETURN NEW;
+  END IF;
+  INSERT INTO activity_events(
+    entity_type, entity_id, event_type, is_synthetic
+  ) VALUES ('event', OLD.id, 'event_deleted', OLD.title LIKE 'smoke-%')
+  ON CONFLICT DO NOTHING;
+  RETURN OLD;
+END;
+$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS activity_events_natural_key_idx
+ON activity_events (entity_type, entity_id, event_type, occurred_at);
+
+CREATE INDEX IF NOT EXISTS activity_events_occurred_at_idx
+ON activity_events (occurred_at);
+
+-- Backfill retained records once. ON CONFLICT makes the migration repeatable.
+INSERT INTO activity_events(
+  entity_type, entity_id, event_type, priority, is_synthetic, occurred_at
+)
+SELECT 'task', id, 'task_created', priority, title LIKE 'smoke-%', created_at
+FROM tasks
+ON CONFLICT DO NOTHING;
+
+INSERT INTO activity_events(
+  entity_type, entity_id, event_type, priority, is_synthetic, occurred_at
+)
+SELECT
+  'task', id, 'task_completed', priority, title LIKE 'smoke-%', completed_at
+FROM tasks WHERE completed_at IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+INSERT INTO activity_events(
+  entity_type, entity_id, event_type, is_synthetic, occurred_at
+)
+SELECT 'note', id, 'note_created', title LIKE 'smoke-%', created_at FROM notes
+ON CONFLICT DO NOTHING;
+
+INSERT INTO activity_events(
+  entity_type, entity_id, event_type, is_synthetic, occurred_at
+)
+SELECT
+  'event', id, 'event_scheduled', title LIKE 'smoke-%', created_at FROM events
+ON CONFLICT DO NOTHING;
+
+DROP TRIGGER IF EXISTS tasks_record_activity ON tasks;
+CREATE TRIGGER tasks_record_activity
+AFTER INSERT OR UPDATE OR DELETE ON tasks
+FOR EACH ROW EXECUTE FUNCTION record_task_activity();
+
+DROP TRIGGER IF EXISTS notes_record_activity ON notes;
+CREATE TRIGGER notes_record_activity
+AFTER INSERT OR DELETE ON notes
+FOR EACH ROW EXECUTE FUNCTION record_note_activity();
+
+DROP TRIGGER IF EXISTS calendar_record_activity ON events;
+CREATE TRIGGER calendar_record_activity
+AFTER INSERT OR DELETE ON events
+FOR EACH ROW EXECUTE FUNCTION record_calendar_activity();
+
 CREATE INDEX IF NOT EXISTS tasks_due_at_idx
 ON tasks (due_at)
 WHERE due_at IS NOT NULL;
@@ -110,13 +282,16 @@ GRANT USAGE ON SCHEMA public, google_ml TO productivity_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON tasks, notes, events TO productivity_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO productivity_app;
 GRANT EXECUTE ON FUNCTION google_ml.embedding TO productivity_app;
+REVOKE ALL ON activity_events FROM productivity_app;
 
 GRANT USAGE ON SCHEMA public TO productivity_analytics;
-GRANT SELECT ON tasks, notes, events TO productivity_analytics;
+GRANT SELECT ON tasks, notes, events, activity_events TO productivity_analytics;
 
 INSERT INTO schema_migrations(version) VALUES ('001_deployment_readiness')
 ON CONFLICT (version) DO NOTHING;
 INSERT INTO schema_migrations(version) VALUES ('002_task_deadlines')
+ON CONFLICT (version) DO NOTHING;
+INSERT INTO schema_migrations(version) VALUES ('003_activity_ledger')
 ON CONFLICT (version) DO NOTHING;
 
 SELECT 'AlloyDB schema and migration applied' AS status;

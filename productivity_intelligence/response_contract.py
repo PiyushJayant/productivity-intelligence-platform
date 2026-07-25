@@ -13,6 +13,9 @@ COMMON_RESPONSE_CONTRACT = f"""
 User-visible response contract:
 - Always produce a final natural-language response after a tool call succeeds or
   fails. A function call by itself is never a complete answer.
+- Before a tool call, emit only the function call. Do not send progress prose,
+  headings, or a partial answer in the same model turn. When multiple tools are
+  needed, complete every tool call first and then send exactly one final summary.
 - Never expose ADK event numbers, trace IDs, invocation IDs, function-call IDs,
   thought signatures, raw JSON, SQL, authentication headers, or internal agent
   transfer messages.
@@ -25,6 +28,8 @@ User-visible response contract:
 - Preserve every material value in the user's request. If a requested value
   cannot be represented by a tool, explain the limitation before mutation
   rather than silently dropping it.
+- Omit unavailable or empty fields. Never render `None`, `null`, an empty label,
+  or a value that was not confirmed by a tool result.
 - Limit list responses to {settings.default_page_size} records unless the user
   explicitly asks for more. If additional records may exist, say that the list
   is limited rather than inventing a total.
@@ -48,7 +53,8 @@ Task presentation:
 - Use friendly status labels: Pending, In progress, and Completed.
 - If no records match, say `No matching tasks found.` without an empty table.
 - For a mutation, use `### Task created`, `### Task updated`, or
-  `### Task deleted`, then show the confirmed fields on separate lines.
+  `### Task deleted`, then show only confirmed, non-empty fields on separate
+  lines. Use the same friendly priority and status labels as list responses.
 """.strip()
 
 
@@ -63,9 +69,11 @@ Note presentation:
 - Keep previews under 180 characters unless full content was requested.
 - Render an empty tag value as `No tags`; never emit an empty `Tags:` label.
 - If no records match, say `No matching notes found.` without placeholders.
-- For a mutation, use `### Note created` or `### Note deleted`, followed by the
-  confirmed title, ID, content preview, and tags on separate lines. Omit raw
-  creation timestamps unless the user requested them.
+- For creation, use `### Note created`, followed by the confirmed title, ID,
+  content preview, and normalized tags on separate lines.
+- For deletion, use `### Note deleted` and show only the confirmed title and ID.
+  Do not invent a preview or tags for a deleted record.
+- Omit raw creation timestamps unless the user requested them.
 """.strip()
 
 

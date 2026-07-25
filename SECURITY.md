@@ -37,6 +37,20 @@ contains database password values. Treat it as a secret:
 Cloud Run never receives these values as ordinary environment variables. Toolbox
 and migration revisions refer to Secret Manager numeric versions.
 
+## Analytics retention boundary
+
+Hard deletion removes task titles and descriptions, note titles/content/tags,
+and calendar event details from operational tables. A separate append-only
+analytics ledger intentionally retains only entity type, numeric entity ID,
+event type, priority, a synthetic-test marker, and timestamp. It contains no
+free-form user content and preserves aggregate productivity history after record
+deletion.
+
+Treat ledger identifiers and timestamps as pseudonymous operational metadata.
+Deleting the AlloyDB cluster through the complete cleanup workflow removes both
+operational records and this ledger. Synthetic deployment activity is marked at
+write time and excluded from user-facing BigQuery views.
+
 ## Lifecycle automation boundary
 
 Optional scheduled lifecycle automation uses separate scheduler and lifecycle

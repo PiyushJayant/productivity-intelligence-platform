@@ -23,6 +23,9 @@ from productivity_intelligence.date_tools import (
         ("next Friday", "2026-07-31"),
         ("in 2 weeks", "2026-08-06"),
         ("2026-12-05", "2026-12-05"),
+        ("26th July", "2026-07-26"),
+        ("July 26, 2026", "2026-07-26"),
+        ("1 January", "2027-01-01"),
     ],
 )
 def test_resolve_supported_date_expressions(expression, expected):
@@ -48,6 +51,9 @@ def test_public_date_tool_returns_structured_error():
         ("tomorrow at 09:30 am", "2026-07-24", "09:30"),
         ("next Friday at 16:45", "2026-07-31", "16:45"),
         ("2026-12-05 14:00", "2026-12-05", "14:00"),
+        ("2 pm tomorrow", "2026-07-24", "14:00"),
+        ("at 2 pm tomorrow", "2026-07-24", "14:00"),
+        ("14:30 next Friday", "2026-07-31", "14:30"),
     ],
 )
 def test_resolve_supported_datetime_expressions(
@@ -73,3 +79,31 @@ def test_last_year_requires_explicit_reporting_semantics():
     result = json.loads(resolve_reporting_period("last year"))
     assert result["status"] == "clarification_required"
     assert "rolling 12 months" in result["message"]
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_start", "expected_end", "expected_grain"),
+    [
+        ("last month", "2026-06-01", "2026-06-30", "day"),
+        ("this quarter", "2026-07-01", "2026-07-23", "month"),
+        ("last quarter", "2026-04-01", "2026-06-30", "month"),
+    ],
+)
+def test_reporting_period_supports_calendar_business_ranges(
+    monkeypatch, expression, expected_start, expected_end, expected_grain
+):
+    from productivity_intelligence import date_tools
+
+    class FixedDateTime:
+        @staticmethod
+        def now(_timezone):
+            from datetime import datetime
+
+            return datetime(2026, 7, 23, 12)
+
+    monkeypatch.setattr(date_tools, "datetime", FixedDateTime)
+    result = json.loads(resolve_reporting_period(expression))
+    assert result["status"] == "resolved"
+    assert result["start_date"] == expected_start
+    assert result["end_date"] == expected_end
+    assert result["grain"] == expected_grain

@@ -43,17 +43,48 @@ def create_live_views(
     FROM EXTERNAL_QUERY(
       '{connection}',
       '''
+      WITH created AS (
+        SELECT
+          entity_id,
+          priority,
+          (occurred_at AT TIME ZONE '{timezone}')::date AS date
+        FROM activity_events
+        WHERE entity_type = 'task'
+          AND event_type = 'task_created'
+          AND NOT is_synthetic
+      ),
+      latest_status AS (
+        SELECT DISTINCT ON (entity_id)
+          entity_id,
+          CASE event_type
+            WHEN 'task_created' THEN 'pending'
+            WHEN 'task_pending' THEN 'pending'
+            WHEN 'task_in_progress' THEN 'in_progress'
+            WHEN 'task_completed' THEN 'done'
+          END AS status
+        FROM activity_events
+        WHERE entity_type = 'task'
+          AND NOT is_synthetic
+          AND event_type IN (
+            'task_created', 'task_pending', 'task_in_progress', 'task_completed'
+          )
+        ORDER BY entity_id, occurred_at DESC, id DESC
+      )
       SELECT
-        (created_at AT TIME ZONE '{timezone}')::date AS date,
-        priority,
+        created.date,
+        created.priority,
         COUNT(*)::bigint AS total_tasks,
-        COUNT(*) FILTER (WHERE status = 'done')::bigint AS completed_tasks,
-        COUNT(*) FILTER (WHERE status = 'pending')::bigint AS pending_tasks,
-        COUNT(*) FILTER (WHERE status = 'in_progress')::bigint AS in_progress_tasks,
-        (COUNT(*) FILTER (WHERE status = 'done'))::double precision
+        COUNT(*) FILTER (WHERE latest_status.status = 'done')::bigint
+          AS completed_tasks,
+        COUNT(*) FILTER (WHERE latest_status.status = 'pending')::bigint
+          AS pending_tasks,
+        COUNT(*) FILTER (WHERE latest_status.status = 'in_progress')::bigint
+          AS in_progress_tasks,
+        (COUNT(*) FILTER (WHERE latest_status.status = 'done'))::double precision
           / NULLIF(COUNT(*), 0) AS completion_rate
-      FROM tasks
-      GROUP BY (created_at AT TIME ZONE '{timezone}')::date, priority
+      FROM created
+      JOIN latest_status USING (entity_id)
+      GROUP BY created.date, created.priority
       '''
     )
     """
@@ -64,29 +95,22 @@ def create_live_views(
     FROM EXTERNAL_QUERY(
       '{connection}',
       '''
-      WITH activity AS (
-        SELECT (created_at AT TIME ZONE '{timezone}')::date AS date,
-               1 AS tasks_created, 0 AS tasks_completed,
-               0 AS notes_created, 0 AS events_scheduled
-        FROM tasks
-        UNION ALL
-        SELECT (completed_at AT TIME ZONE '{timezone}')::date, 0, 1, 0, 0
-        FROM tasks
-        WHERE completed_at IS NOT NULL
-        UNION ALL
-        SELECT (created_at AT TIME ZONE '{timezone}')::date, 0, 0, 1, 0
-        FROM notes
-        UNION ALL
-        SELECT (created_at AT TIME ZONE '{timezone}')::date, 0, 0, 0, 1
-        FROM events
+      SELECT
+        (occurred_at AT TIME ZONE '{timezone}')::date AS date,
+        COUNT(*) FILTER (WHERE event_type = 'task_created')::bigint
+          AS tasks_created,
+        COUNT(*) FILTER (WHERE event_type = 'task_completed')::bigint
+          AS tasks_completed,
+        COUNT(*) FILTER (WHERE event_type = 'note_created')::bigint
+          AS notes_created,
+        COUNT(*) FILTER (WHERE event_type = 'event_scheduled')::bigint
+          AS events_scheduled
+      FROM activity_events
+      WHERE event_type IN (
+        'task_created', 'task_completed', 'note_created', 'event_scheduled'
       )
-      SELECT date,
-             SUM(tasks_created)::bigint AS tasks_created,
-             SUM(tasks_completed)::bigint AS tasks_completed,
-             SUM(notes_created)::bigint AS notes_created,
-             SUM(events_scheduled)::bigint AS events_scheduled
-      FROM activity
-      GROUP BY date
+        AND NOT is_synthetic
+      GROUP BY (occurred_at AT TIME ZONE '{timezone}')::date
       '''
     )
     """

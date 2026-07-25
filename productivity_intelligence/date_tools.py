@@ -18,6 +18,27 @@ WEEKDAYS = {
     "saturday": 5,
     "sunday": 6,
 }
+MONTHS = {
+    name: number
+    for number, name in enumerate(
+        (
+            "",
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        )
+    )
+    if name
+}
 
 
 def _resolve_date(expression: str, *, today: date) -> tuple[date, str]:
@@ -28,6 +49,33 @@ def _resolve_date(expression: str, *, today: date) -> tuple[date, str]:
         return date.fromisoformat(normalized), "explicit ISO date"
     except ValueError:
         pass
+
+    named_date = re.fullmatch(
+        r"(\d{1,2})(?:st|nd|rd|th)?\s+"
+        r"(january|february|march|april|may|june|july|august|september|"
+        r"october|november|december)(?:\s+(\d{4}))?",
+        normalized,
+    )
+    month_first_date = re.fullmatch(
+        r"(january|february|march|april|may|june|july|august|september|"
+        r"october|november|december)\s+"
+        r"(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?",
+        normalized,
+    )
+    named_parts = named_date.groups() if named_date else None
+    if month_first_date is not None:
+        month_name, day, explicit_year = month_first_date.groups()
+        named_parts = (day, month_name, explicit_year)
+    if named_parts is not None:
+        day, month_name, explicit_year = named_parts
+        year = int(explicit_year) if explicit_year else today.year
+        try:
+            resolved = date(year, MONTHS[month_name], int(day))
+        except ValueError as error:
+            raise ValueError("named date is not a valid calendar date") from error
+        if explicit_year is None and resolved < today:
+            resolved = resolved.replace(year=year + 1)
+        return resolved, "explicit named date"
 
     fixed_offsets = {
         "today": (0, "today"),
@@ -112,6 +160,26 @@ def _parse_clock(hour: int, minute: int, meridiem: str | None) -> time:
 
 def _resolve_datetime(expression: str, *, today: date) -> tuple[date, time, str]:
     normalized = re.sub(r"\s+", " ", expression.strip().lower())
+    time_first = re.fullmatch(
+        r"(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+(?:on\s+)?(.+)",
+        normalized,
+    )
+    if time_first:
+        hour, minute, meridiem, date_expression = time_first.groups()
+        resolved_date, date_interpretation = _resolve_date(date_expression, today=today)
+        resolved_time = _parse_clock(int(hour), int(minute or "0"), meridiem)
+        return resolved_date, resolved_time, f"{date_interpretation} at {resolved_time:%H:%M}"
+
+    time_first_24h = re.fullmatch(
+        r"(?:at\s+)?(\d{1,2}):(\d{2})\s+(?:on\s+)?(.+)",
+        normalized,
+    )
+    if time_first_24h:
+        hour, minute, date_expression = time_first_24h.groups()
+        resolved_date, date_interpretation = _resolve_date(date_expression, today=today)
+        resolved_time = _parse_clock(int(hour), int(minute), None)
+        return resolved_date, resolved_time, f"{date_interpretation} at {resolved_time:%H:%M}"
+
     match = re.fullmatch(
         r"(.+?)\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)",
         normalized,
@@ -195,6 +263,10 @@ def _subtract_months(value: date, months: int) -> date:
     return date(month_index // 12, month_index % 12 + 1, 1)
 
 
+def _quarter_start(value: date) -> date:
+    return date(value.year, ((value.month - 1) // 3) * 3 + 1, 1)
+
+
 def resolve_reporting_period(expression: str) -> str:
     """Resolve a reporting-period phrase to an inclusive date range and grain.
 
@@ -227,6 +299,16 @@ def resolve_reporting_period(expression: str) -> str:
             start, end, grain = date(today.year, 1, 1), today, "month"
         elif normalized == "this month":
             start, end, grain = today.replace(day=1), today, "day"
+        elif normalized == "last month":
+            start = _subtract_months(today.replace(day=1), 1)
+            end = today.replace(day=1) - timedelta(days=1)
+            grain = "day"
+        elif normalized == "this quarter":
+            start, end, grain = _quarter_start(today), today, "month"
+        elif normalized in {"last quarter", "previous calendar quarter"}:
+            current_quarter = _quarter_start(today)
+            start = _subtract_months(current_quarter, 3)
+            end, grain = current_quarter - timedelta(days=1), "month"
         elif normalized == "this week":
             start, end, grain = today - timedelta(days=today.weekday()), today, "day"
         elif match := re.fullmatch(r"last (\d{1,3}) (day|days|week|weeks)", normalized):
@@ -254,8 +336,9 @@ def resolve_reporting_period(expression: str) -> str:
             grain = "day" if (end - start).days <= 31 else "month"
         else:
             raise ValueError(
-                "use last N days/weeks/months, this week/month/year, "
-                "rolling 12 months, previous calendar year, or an ISO date range"
+                "use last N days/weeks/months, last month/quarter, "
+                "this week/month/quarter/year, rolling 12 months, "
+                "previous calendar year, or an ISO date range"
             )
         result = {
             "status": "resolved",

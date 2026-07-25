@@ -129,6 +129,7 @@ def main() -> None:
     parser.add_argument("--service-account", required=True)
     parser.add_argument("--assistant-url")
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--connection", required=True)
     parser.add_argument("--timezone", required=True)
     args = parser.parse_args()
 
@@ -138,7 +139,6 @@ def main() -> None:
         hour=16, minute=0, second=0, microsecond=0
     )
     deadline_utc = deadline_local.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    activity_date = datetime.now(timezone).date()
     token = identity_token(args.service_account, args.toolbox_url)
     headers = {"Authorization": f"Bearer {token}"}
     client = ToolboxSyncClient(args.toolbox_url, client_headers=headers)
@@ -194,34 +194,53 @@ def main() -> None:
         listed_events = decode_rows(list_events(date=event_date))
         assert any(int(row["id"]) == event_id for row in listed_events)
 
+        deleted_task_id = task_id
+        deleted_task = decode_rows(delete_task(task_id=deleted_task_id))
+        assert deleted_task and int(deleted_task[0]["id"]) == deleted_task_id
+        task_id = None
+
         bq = bigquery.Client(project=args.project)
+        connection = f"{args.project}.{args.region}.{args.connection}"
         sql = f"""
-        SELECT SUM(completed_tasks) AS completed
-        FROM `{args.project}.{args.dataset}.task_summary`
-        WHERE date = @activity_date AND priority = 'high'
-        """
-        query_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("activity_date", "DATE", activity_date)
-            ]
+        SELECT event_count
+        FROM EXTERNAL_QUERY(
+          '{connection}',
+          '''
+          SELECT COUNT(*)::bigint AS event_count
+          FROM activity_events
+          WHERE entity_type = 'task'
+            AND entity_id = {deleted_task_id}
+            AND event_type IN ('task_completed', 'task_deleted')
+            AND is_synthetic
+          '''
         )
+        """
         for attempt in range(6):
             rows = list(
                 bq.query(
                     sql,
                     location=args.region,
-                    job_config=query_config,
                 ).result()
             )
-            if rows and (rows[0].completed or 0) >= 1:
+            if rows and (rows[0].event_count or 0) >= 2:
                 break
             if attempt == 5:
-                raise AssertionError("completed task was not visible through BigQuery federation")
+                raise AssertionError(
+                    "deleted task activity was not preserved through federation"
+                )
             time.sleep(5)
+        list(
+            bq.query(
+                f"SELECT * FROM `{args.project}.{args.dataset}.daily_activity` LIMIT 0",
+                location=args.region,
+            ).result()
+        )
 
         missing = decode_rows(delete_task(task_id=2_147_483_647))
         assert not missing, "deleting a nonexistent task must return an empty/not-found result"
-        checks = "Task CRUD, live analytics, semantic notes, and calendar"
+        checks = (
+            "Task CRUD, deletion-safe live analytics, semantic notes, and calendar"
+        )
         if args.assistant_url:
             checks += ", ADK tool execution, and final chat response"
         print(f"[OK] {checks} smoke tests passed")

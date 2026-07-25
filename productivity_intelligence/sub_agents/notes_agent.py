@@ -7,6 +7,7 @@ from productivity_intelligence.context_policy import (
     compact_specialist_history,
     record_model_usage,
 )
+from productivity_intelligence.guardrails import enforce_destructive_confirmation
 from productivity_intelligence.model_config import gemini_generate_content_config
 from productivity_intelligence.response_contract import NOTES_RESPONSE_CONTRACT
 from productivity_intelligence.status import capabilities
@@ -37,6 +38,10 @@ You can:
 - List all notes or filter by a tag.
 - Delete notes by ID only after the user explicitly confirms the deletion.
 
+When the user confirms multiple exact IDs, call `delete_notes` once instead of
+repeating `delete_note`. Report requested IDs that were absent without claiming
+success.
+
 Prefer semantic search for conceptual queries and list for browsing all notes.
 If a delete returns no row, explain that the note ID was not found.
 
@@ -49,6 +54,7 @@ use empty tags when omitted, and create the note without redundant questions.
 
 {NOTES_RESPONSE_CONTRACT}""",
         tools=notes_tools,
+        before_tool_callback=enforce_destructive_confirmation,
         before_model_callback=compact_specialist_history,
         after_model_callback=record_model_usage,
     )

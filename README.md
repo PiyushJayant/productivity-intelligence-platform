@@ -153,16 +153,22 @@ Rollback requires an explicit prior revision:
 
 ## Suspend and resume
 
-AlloyDB is the primary idle-cost driver. Suspend instance compute whenever a demo
-is not in use:
+AlloyDB is the primary idle-cost driver. Suspend the complete request-driven
+runtime whenever a demo is not in use:
 
 ```bash
 ./setup/deploy.sh suspend
 ./setup/deploy.sh cost-status
 ```
 
-The cluster retains data and backup configuration, but database-backed capabilities
-are unavailable while suspended. Resume before testing or judging:
+Suspension removes public assistant invocation, pauses lifecycle schedulers,
+removes the hosted uptime probe, enforces zero minimum Cloud Run instances, and
+stops AlloyDB instance compute. The cluster, backups, container images, logs,
+secrets, and BigQuery metadata remain retained and may incur storage charges;
+use complete cleanup when a literal zero-resource project is required.
+
+Resume restores the configured scaling, public invocation, schedulers, monitoring,
+and AlloyDB before testing or judging:
 
 ```bash
 ./setup/deploy.sh resume
@@ -212,6 +218,11 @@ automation is rejected for the `production` cost profile.
 - Agents retry transient Vertex AI 429 and 5xx responses with bounded backoff.
 - A shared presentation contract requires a final user-visible response after
   every tool call and rejects exposed ADK event, trace, and function-call metadata.
+- A deterministic pre-tool guard blocks task, note, and event deletion until the
+  current conversation confirms the exact IDs; prompt compliance alone is not
+  treated as an authorization boundary.
+- Multi-record updates and deletes use atomic bulk tools instead of repeated
+  model/tool round trips.
 - Responses use consistent Markdown headings and tables across every specialist.
 - `/healthz` reports process liveness without dependency details.
 - `/readyz` reports expected, loaded, and missing agents and returns 503 until
@@ -252,10 +263,15 @@ AlloyDB stores typed tasks, notes, and events. Tasks preserve both a typed due
 date and an optional exact timezone-aware deadline. Task status changes maintain
 `updated_at` and `completed_at`. Notes use the configured `EMBEDDING_MODEL` and
 `EMBEDDING_DIMENSIONS` through `google_ml.embedding` and exact cosine search.
+An append-only activity ledger records only entity IDs, event types, priority,
+synthetic-test markers, and timestamps—never titles, descriptions, tags, or note
+content. This preserves aggregate analytics after operational records are deleted.
+Synthetic deployment checks are excluded from user analytics.
 
 BigQuery dataset and connection names come from `.env`. The `task_summary` and
 `daily_activity` views aggregate inside AlloyDB before returning small result sets
-through `EXTERNAL_QUERY`. Day boundaries use `DEFAULT_TIMEZONE`. The model cannot
+through `EXTERNAL_QUERY` over the activity ledger. Day boundaries use
+`DEFAULT_TIMEZONE`. The model cannot
 author SQL: the analytics agent exposes one domain tool that runs a fixed,
 parameterized query over the approved views and calculates period completion
 rates from summed completed and total tasks rather than averaging percentages.
@@ -269,6 +285,8 @@ rates from summed completed and total tasks rather than averaging percentages.
   deployments resolve numeric versions.
 - Runtime identities have no Cloud Build or Artifact Registry administration.
 - Delete requests require explicit conversational confirmation.
+- Delete confirmation is revalidated immediately before tool execution against
+  recent real user messages and the exact requested IDs.
 - Successful health requests can be excluded from stored logs.
 - Request logs are structured JSON with a configurable correlation header,
   method, path, status, and latency. Bodies, query strings, credentials, and

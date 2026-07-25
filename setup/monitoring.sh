@@ -32,8 +32,8 @@ else
     [[ -z "${uptime}" ]] || gcloud monitoring uptime delete "${uptime}" \
       --project="${PROJECT_ID}" --quiet
   done < <(gcloud monitoring uptime list-configs --project="${PROJECT_ID}" \
-    --filter='displayName="Productivity Intelligence hosted liveness"' \
-    --format='value(name)')
+    --format=json | "${PYTHON_BIN}" -c \
+    "import json,sys; [print(x['name']) for x in json.load(sys.stdin) if x.get('displayName') == 'Productivity Intelligence hosted liveness']")
 fi
 
 create_threshold_policy() {

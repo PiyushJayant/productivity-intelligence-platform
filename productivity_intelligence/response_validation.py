@@ -15,7 +15,14 @@ FORBIDDEN_VISIBLE_PATTERNS = {
         re.IGNORECASE,
     ),
     "synthetic context wrapper": re.compile(r"(?m)^\s*For context:\s*$", re.IGNORECASE),
-    "empty labelled field": re.compile(r"(?m)^\s*(?:Tags|Title|Task|Date|Time):\s*$"),
+    "empty labelled field": re.compile(
+        r"(?m)^\s*(?:Tags|Title|Task|Description|Date|Time|Content preview):\s*$",
+        re.IGNORECASE,
+    ),
+    "placeholder labelled value": re.compile(
+        r"(?mi)^\s*(?:Tags|Title|Task|Description|Date|Time|Content preview):"
+        r"\s*(?:None|null)\s*$"
+    ),
     "raw UTC timestamp": re.compile(
         r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b"
     ),

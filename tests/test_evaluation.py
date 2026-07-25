@@ -70,6 +70,18 @@ def test_created_note_requires_preview_and_normalized_tags():
     )
 
 
+def test_deleted_note_omits_unavailable_placeholder_fields():
+    response = "### Note deleted\nTitle: Application Logs\nID: 2"
+    assert validate_visible_response("notes_agent", response) == []
+
+    violations = validate_visible_response(
+        "notes_agent",
+        "### Note deleted\nTitle: Application Logs\nID: 2\n"
+        "Content Preview: None\nTags: No tags",
+    )
+    assert "response exposes placeholder labelled value" in violations
+
+
 def test_action_fidelity_detects_a_dropped_deadline_time():
     violations = validate_action_fidelity(
         {"title": "suspend application", "due_at": "2026-07-25T10:30:00Z"},

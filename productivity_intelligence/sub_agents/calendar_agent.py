@@ -14,6 +14,7 @@ from productivity_intelligence.date_tools import (
     resolve_relative_date,
     resolve_relative_datetime,
 )
+from productivity_intelligence.guardrails import enforce_destructive_confirmation
 from productivity_intelligence.model_config import gemini_generate_content_config
 from productivity_intelligence.response_contract import CALENDAR_RESPONSE_CONTRACT
 from productivity_intelligence.status import capabilities
@@ -42,9 +43,15 @@ You can:
 - List all events or filter by a specific date
 - Delete events by their ID, but only after the user explicitly confirms the deletion
 
+When the user confirms multiple exact IDs, call `delete_events` once instead of
+repeating `delete_event`. Report requested IDs that were absent without claiming
+success.
+
 Extract title, date, time, duration, and description from the original request
 before asking a question. Call `resolve_relative_datetime` once when date and
-time appear together; otherwise use `resolve_relative_date` for the date.
+time appear together, regardless of whether the time comes first; otherwise
+use `resolve_relative_date` for the date, including named dates such as
+"26th July".
 Default duration to 60 minutes when omitted and clearly label that default in
 the confirmation. Ask only for genuinely missing or ambiguous fields.
 
@@ -53,6 +60,7 @@ If a delete returns no row, explain that the event ID was not found.
 
 {CALENDAR_RESPONSE_CONTRACT}""",
         tools=[*calendar_tools, resolve_relative_date, resolve_relative_datetime],
+        before_tool_callback=enforce_destructive_confirmation,
         before_model_callback=compact_specialist_history,
         after_model_callback=record_model_usage,
     )

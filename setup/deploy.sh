@@ -306,6 +306,79 @@ suspend_alloydb() {
   echo "[OK] AlloyDB suspended; instance compute billing is stopped."
 }
 
+set_service_min_instances() {
+  local service="$1" desired="$2" maximum="$3" current
+  current="$(gcloud run services describe "${service}" --region="${REGION}" \
+    --project="${PROJECT_ID}" --format=json | "${PYTHON_BIN}" -c \
+    "import json,sys; d=json.load(sys.stdin); root=d.get('metadata',{}).get('annotations',{}); rev=d.get('spec',{}).get('template',{}).get('metadata',{}).get('annotations',{}); print(root.get('run.googleapis.com/minScale',rev.get('autoscaling.knative.dev/minScale','0')))")"
+  [[ "${current}" == "${desired}" ]] && return
+  gcloud run services update "${service}" --region="${REGION}" \
+    --project="${PROJECT_ID}" --min="${desired}" --max="${maximum}" --quiet
+}
+
+remove_assistant_public_access() {
+  gcloud run services remove-iam-policy-binding "${ASSISTANT_SERVICE_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" --member=allUsers \
+    --role=roles/run.invoker --quiet >/dev/null 2>&1 || true
+}
+
+restore_assistant_public_access() {
+  gcloud run services add-iam-policy-binding "${ASSISTANT_SERVICE_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" --member=allUsers \
+    --role=roles/run.invoker --quiet >/dev/null
+}
+
+set_lifecycle_schedulers_state() {
+  local action="$1" scheduler_job
+  for scheduler_job in \
+      "${LIFECYCLE_JOB_NAME}-resume" "${LIFECYCLE_JOB_NAME}-suspend"; do
+    if gcloud scheduler jobs describe "${scheduler_job}" --location="${REGION}" \
+        --project="${PROJECT_ID}" >/dev/null 2>&1; then
+      gcloud scheduler jobs "${action}" "${scheduler_job}" --location="${REGION}" \
+        --project="${PROJECT_ID}" --quiet >/dev/null
+    fi
+  done
+}
+
+remove_hosted_uptime_check() {
+  local uptime
+  while IFS= read -r uptime; do
+    [[ -z "${uptime}" ]] || gcloud monitoring uptime delete "${uptime}" \
+      --project="${PROJECT_ID}" --quiet >/dev/null
+  done < <(gcloud monitoring uptime list-configs --project="${PROJECT_ID}" \
+    --format=json | "${PYTHON_BIN}" -c \
+    "import json,sys; [print(x['name']) for x in json.load(sys.stdin) if x.get('displayName') == 'Productivity Intelligence hosted liveness']")
+}
+
+suspend_application() {
+  remove_assistant_public_access
+  set_lifecycle_schedulers_state pause
+  remove_hosted_uptime_check
+  set_service_min_instances \
+    "${ASSISTANT_SERVICE_NAME}" 0 "${ASSISTANT_MAX_INSTANCES}"
+  set_service_min_instances \
+    "${TOOLBOX_SERVICE_NAME}" 0 "${TOOLBOX_MAX_INSTANCES}"
+  suspend_alloydb
+  echo "[OK] Application quiesced: public invocation disabled and compute scaled to zero."
+  echo "[INFO] Retained databases, backups, images, logs, and secrets may still incur storage charges."
+}
+
+resume_application() {
+  resume_alloydb
+  set_service_min_instances \
+    "${TOOLBOX_SERVICE_NAME}" "${TOOLBOX_MIN_INSTANCES}" "${TOOLBOX_MAX_INSTANCES}"
+  set_service_min_instances \
+    "${ASSISTANT_SERVICE_NAME}" "${ASSISTANT_MIN_INSTANCES}" "${ASSISTANT_MAX_INSTANCES}"
+  restore_assistant_public_access
+  if [[ "${ENABLE_SCHEDULED_LIFECYCLE}" == "true" ]]; then
+    set_lifecycle_schedulers_state resume
+  fi
+  if [[ "${ENABLE_MONITORING}" == "true" ]]; then
+    "${SCRIPT_DIR}/monitoring.sh"
+  fi
+  echo "[OK] Application resumed and public invocation restored."
+}
+
 cost_status() {
   local state activation machine availability monthly
   read -r state activation machine availability < <(alloydb_details)
@@ -365,6 +438,7 @@ PY
       --project="${PROJECT_ID}" --region="${REGION}" \
       --toolbox-url="${toolbox_url}" --service-account="${ASSISTANT_SA}" \
       --assistant-url="${assistant_url}" --dataset="${BIGQUERY_DATASET}" \
+      --connection="${BIGQUERY_CONNECTION_ID}" \
       --timezone="${DEFAULT_TIMEZONE}"
   else
     echo "[SKIP] CRUD smoke checks are unavailable in prototype mode."
@@ -395,8 +469,8 @@ case "${ACTION}" in
   preflight) ;;
   provision) "${SCRIPT_DIR}/provision.sh" ;;
   build) build_images ;;
-  resume) resume_alloydb ;;
-  suspend) suspend_alloydb ;;
+  resume) resume_application ;;
+  suspend) suspend_application ;;
   cost-status) cost_status ;;
   migrate) resume_alloydb; run_migration ;;
   lifecycle) deploy_lifecycle_automation ;;
@@ -431,7 +505,7 @@ case "${ACTION}" in
       "${SCRIPT_DIR}/monitoring.sh"
     fi
     if [[ "${AUTO_SUSPEND_AFTER_DEPLOY}" == "true" ]]; then
-      suspend_alloydb
+      suspend_application
     fi
     ;;
   *)

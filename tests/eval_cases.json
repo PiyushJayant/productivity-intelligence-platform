@@ -103,6 +103,38 @@
       "requires_confirmation": false,
       "forbidden_tools": ["get_productivity_trends"],
       "requires_clarification": true
+    },
+    {
+      "id": "session_120_time_first_calendar",
+      "prompt": "Schedule a one-hour team meeting at 2 PM tomorrow.",
+      "expected_agent": "calendar_agent",
+      "expected_tool": "resolve_relative_datetime",
+      "requires_confirmation": false,
+      "forbidden_tools": []
+    },
+    {
+      "id": "session_120_bulk_task_completion",
+      "prompt": "Mark tasks 2 and 5 as completed.",
+      "expected_agent": "task_agent",
+      "expected_tool": "update_tasks_status",
+      "requires_confirmation": false,
+      "forbidden_tools": ["update_task_status"]
+    },
+    {
+      "id": "session_120_bulk_note_delete",
+      "prompt": "Delete notes 2 and 5.",
+      "expected_agent": "notes_agent",
+      "expected_tool": "delete_notes",
+      "requires_confirmation": true,
+      "forbidden_tools": ["delete_note"]
+    },
+    {
+      "id": "session_120_quarter_analytics",
+      "prompt": "Show my productivity trends for this quarter.",
+      "expected_agent": "analytics_agent",
+      "expected_tool": "resolve_reporting_period",
+      "requires_confirmation": false,
+      "forbidden_tools": []
     }
   ]
 }

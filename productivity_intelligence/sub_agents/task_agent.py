@@ -15,6 +15,7 @@ from productivity_intelligence.date_tools import (
     resolve_relative_date,
     resolve_relative_datetime,
 )
+from productivity_intelligence.guardrails import enforce_destructive_confirmation
 from productivity_intelligence.model_config import gemini_generate_content_config
 from productivity_intelligence.response_contract import TASK_RESPONSE_CONTRACT
 from productivity_intelligence.status import capabilities
@@ -44,6 +45,10 @@ You can:
 - Update a task's status to pending, in_progress, or done
 - Delete tasks by their ID, but only after the user explicitly confirms the deletion
 
+When the user selects multiple exact IDs, use the matching bulk tool once
+(`update_tasks_status` or `delete_tasks`) instead of making repeated single-ID
+calls. Report requested IDs that were absent without claiming success.
+
 Extract every value already present in the user's request before asking a
 question. Infer a concise title from the requested action, use an empty
 description when omitted, and default priority to medium when the user does not
@@ -59,6 +64,7 @@ If an update or delete returns no row, explain that the task ID was not found.
 
 {TASK_RESPONSE_CONTRACT}""",
         tools=[*task_tools, resolve_relative_date, resolve_relative_datetime],
+        before_tool_callback=enforce_destructive_confirmation,
         before_model_callback=compact_specialist_history,
         after_model_callback=record_model_usage,
     )

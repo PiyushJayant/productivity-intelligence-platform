@@ -103,6 +103,30 @@ tools:
       WHERE id = $1
       RETURNING id, title, status;
 
+  update_tasks_status:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: >
+      Atomically update multiple explicitly selected task IDs to one supported
+      status. Prefer this over repeated single-record calls. The user must have
+      identified the exact IDs. Returns only records that existed.
+    parameters:
+      - name: task_ids
+        type: string
+        description: "Comma-separated task IDs, for example: 2,5,9"
+      - name: status
+        type: string
+        description: "New status value: pending, in_progress, or done"
+    statement: >
+      UPDATE tasks
+      SET status = $2
+      FROM (
+        SELECT DISTINCT trim(value)::bigint AS id
+        FROM unnest(string_to_array($1, ',')) AS selected(value)
+      ) AS requested
+      WHERE tasks.id = requested.id
+      RETURNING tasks.id, tasks.title, tasks.status;
+
   delete_task:
     kind: postgres-sql
     source: alloydb-productivity
@@ -117,6 +141,26 @@ tools:
       DELETE FROM tasks
       WHERE id = $1
       RETURNING id, title;
+
+  delete_tasks:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: >
+      Atomically delete multiple tasks after the user explicitly confirms the
+      exact IDs. Prefer this over repeated single-record calls. Returns only
+      records that existed.
+    parameters:
+      - name: task_ids
+        type: string
+        description: "Comma-separated confirmed task IDs, for example: 2,5"
+    statement: >
+      DELETE FROM tasks
+      USING (
+        SELECT DISTINCT trim(value)::bigint AS id
+        FROM unnest(string_to_array($1, ',')) AS selected(value)
+      ) AS requested
+      WHERE tasks.id = requested.id
+      RETURNING tasks.id, tasks.title;
 
   # ── Notes Tools ───────────────────────────────────────────────────────────────
 
@@ -204,6 +248,26 @@ tools:
       WHERE id = $1
       RETURNING id, title;
 
+  delete_notes:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: >
+      Atomically delete multiple notes after the user explicitly confirms the
+      exact IDs. Prefer this over repeated single-record calls. Returns only
+      records that existed.
+    parameters:
+      - name: note_ids
+        type: string
+        description: "Comma-separated confirmed note IDs, for example: 2,5"
+    statement: >
+      DELETE FROM notes
+      USING (
+        SELECT DISTINCT trim(value)::bigint AS id
+        FROM unnest(string_to_array($1, ',')) AS selected(value)
+      ) AS requested
+      WHERE notes.id = requested.id
+      RETURNING notes.id, notes.title;
+
   # ── Calendar Tools ────────────────────────────────────────────────────────────
 
   create_event:
@@ -273,20 +337,44 @@ tools:
       WHERE id = $1
       RETURNING id, title;
 
+  delete_events:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: >
+      Atomically delete multiple events after the user explicitly confirms the
+      exact IDs. Prefer this over repeated single-record calls. Returns only
+      records that existed.
+    parameters:
+      - name: event_ids
+        type: string
+        description: "Comma-separated confirmed event IDs, for example: 2,4"
+    statement: >
+      DELETE FROM events
+      USING (
+        SELECT DISTINCT trim(value)::bigint AS id
+        FROM unnest(string_to_array($1, ',')) AS selected(value)
+      ) AS requested
+      WHERE events.id = requested.id
+      RETURNING events.id, events.title;
+
 toolsets:
   task-tools:
     - create_task
     - list_tasks
     - update_task_status
+    - update_tasks_status
     - delete_task
+    - delete_tasks
 
   notes-tools:
     - create_note
     - search_notes_semantic
     - list_notes
     - delete_note
+    - delete_notes
 
   calendar-tools:
     - create_event
     - list_events
     - delete_event
+    - delete_events

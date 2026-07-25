@@ -33,6 +33,11 @@ def test_toolbox_configuration_is_valid_and_parameterized():
     assert "${DEFAULT_TIMEZONE}" in statements
     assert "to_char(time, 'HH24:MI')" in statements
     assert statements.count("LIMIT ${DEFAULT_PAGE_SIZE}") == 3
+    assert "update_tasks_status" in config["tools"]
+    assert "delete_tasks" in config["tools"]
+    assert "delete_notes" in config["tools"]
+    assert "delete_events" in config["tools"]
+    assert "string_to_array" in statements
 
 
 def test_schema_uses_exact_vector_search_without_scann_or_password():
@@ -42,6 +47,15 @@ def test_schema_uses_exact_vector_search_without_scann_or_password():
     assert "VECTOR(__EMBEDDING_DIMENSIONS__)" in schema
     assert "due_at        TIMESTAMPTZ" in schema
     assert "002_task_deadlines" in schema
+    assert "CREATE TABLE IF NOT EXISTS activity_events" in schema
+    assert "003_activity_ledger" in schema
+    assert "SECURITY DEFINER" in schema
+    assert "REVOKE ALL ON activity_events FROM productivity_app" in schema
+    activity_table = schema.split(
+        "CREATE TABLE IF NOT EXISTS activity_events", 1
+    )[1].split(");", 1)[0]
+    for private_field in ("title", "description", "content", "tags"):
+        assert private_field not in activity_table
     assert "PASSWORD '" not in schema
 
 
@@ -125,8 +139,8 @@ def test_demo_cost_profile_has_hard_scaling_and_database_guards():
     assert "demo profile requires min=0 and max=1" in common
     assert '--machine-type="${ALLOYDB_MACHINE_TYPE}"' in provision
     assert "--cpu-count=2" not in provision
-    assert "resume) resume_alloydb" in deploy
-    assert "suspend) suspend_alloydb" in deploy
+    assert "resume) resume_application" in deploy
+    assert "suspend) suspend_application" in deploy
     assert "cost-status) cost_status" in deploy
 
 
@@ -149,9 +163,13 @@ def test_builds_are_immutable_and_reused():
 def test_bigquery_aggregation_is_pushed_to_alloydb():
     setup = (ROOT / "setup" / "bigquery_setup.py").read_text(encoding="utf-8")
     assert setup.count("FROM EXTERNAL_QUERY(") == 2
-    assert "GROUP BY (created_at AT TIME ZONE '{timezone}')::date, priority" in setup
-    assert setup.count("AT TIME ZONE '{timezone}'") >= 5
-    assert "GROUP BY date" in setup
+    assert setup.count("FROM activity_events") == 3
+    assert "FROM tasks" not in setup
+    assert "FROM notes" not in setup
+    assert "FROM events" not in setup
+    assert "latest_status" in setup
+    assert setup.count("AT TIME ZONE '{timezone}'") >= 2
+    assert "GROUP BY created.date, created.priority" in setup
 
 
 def test_destructive_agent_prompts_require_confirmation():
@@ -222,4 +240,24 @@ def test_candidate_verification_runs_mode_aware_end_to_end_smoke_checks():
     assert '"${readiness_file}" "${APP_MODE}"' in verify
     assert '"${SCRIPT_DIR}/smoke_test.py"' in verify
     assert '--assistant-url="${assistant_url}"' in verify
+    assert '--connection="${BIGQUERY_CONNECTION_ID}"' in verify
     assert 'if [[ "${APP_MODE}" == "full" ]]' in verify
+
+
+def test_complete_suspend_is_reversible_and_quiesces_request_driven_cost():
+    deploy = (ROOT / "setup" / "deploy.sh").read_text(encoding="utf-8")
+    suspend = deploy.split("suspend_application()", 1)[1].split(
+        "resume_application()", 1
+    )[0]
+    resume = deploy.split("resume_application()", 1)[1].split(
+        "cost_status()", 1
+    )[0]
+
+    assert "remove_assistant_public_access" in suspend
+    assert "set_lifecycle_schedulers_state pause" in suspend
+    assert "remove_hosted_uptime_check" in suspend
+    assert '"${ASSISTANT_SERVICE_NAME}" 0' in suspend
+    assert '"${TOOLBOX_SERVICE_NAME}" 0' in suspend
+    assert "suspend_alloydb" in suspend
+    assert "restore_assistant_public_access" in resume
+    assert "resume_alloydb" in resume
