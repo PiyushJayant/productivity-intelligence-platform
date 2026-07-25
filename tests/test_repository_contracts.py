@@ -62,6 +62,11 @@ def test_assistant_uses_global_vertex_endpoint_by_default():
     assert "GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION}" in deploy
 
 
+def test_runtime_includes_cross_platform_timezone_database():
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "tzdata==" in requirements
+
+
 def test_deployment_requires_an_explicit_project_and_installs_monitoring():
     common = (ROOT / "setup" / "common.sh").read_text(encoding="utf-8")
     deploy = (ROOT / "setup" / "deploy.sh").read_text(encoding="utf-8")
