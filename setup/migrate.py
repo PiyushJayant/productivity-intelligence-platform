@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from pathlib import Path
 
 from google.cloud.alloydb.connector import Connector, IPTypes
+
+from setup.migration_runner import Migration, apply_migrations, discover_migrations
+
+SUBJECT_NAMESPACE = uuid.UUID("2ea7b872-6bc4-4a37-9a58-75fd18d94086")
 
 
 def required(name: str) -> str:
@@ -44,6 +49,26 @@ def main() -> None:
     admin_password = required("ADMIN_DB_PASSWORD")
     app_password = required("APP_DB_PASSWORD")
     analytics_password = required("ANALYTICS_DB_PASSWORD")
+    default_tenant_id = str(uuid.UUID(required("DEFAULT_TENANT_ID")))
+    auth_mode = required("AUTH_MODE").lower()
+    if auth_mode == "identity_platform":
+        identity_project = required("IDENTITY_PLATFORM_PROJECT_ID")
+        bootstrap_external_subject = required("BOOTSTRAP_IDP_SUBJECT")
+        if bootstrap_external_subject.startswith("replace-"):
+            raise ValueError("BOOTSTRAP_IDP_SUBJECT is still a placeholder")
+        bootstrap_issuer = f"https://securetoken.google.com/{identity_project}"
+        bootstrap_subject_id = str(
+            uuid.uuid5(
+                SUBJECT_NAMESPACE,
+                f"{bootstrap_issuer}\x1f{bootstrap_external_subject}",
+            )
+        )
+    elif auth_mode == "disabled":
+        bootstrap_issuer = "urn:productivity-intelligence:local-demo"
+        bootstrap_external_subject = "local-demo"
+        bootstrap_subject_id = str(uuid.UUID(required("DEMO_SUBJECT_ID")))
+    else:
+        raise ValueError("AUTH_MODE must be identity_platform or disabled")
 
     connector = Connector()
     if database != "postgres":
@@ -84,15 +109,34 @@ def main() -> None:
             if cursor.fetchone() is None:
                 cursor.execute(f"CREATE ROLE {identifier} NOLOGIN")
 
-        schema = Path("alloydb_schema.sql").read_text(encoding="utf-8")
-        schema = schema.replace(
-            "__EMBEDDING_DIMENSIONS__", str(embedding_dimensions)
-        )
-        schema = schema.replace("productivity_app", role_identifiers[app_user])
-        schema = schema.replace(
-            "productivity_analytics", role_identifiers[analytics_user]
-        )
-        cursor.execute(schema)
+        replacements = {
+            "__EMBEDDING_DIMENSIONS__": str(embedding_dimensions),
+            "__DEFAULT_TENANT_ID__": default_tenant_id,
+            "__BOOTSTRAP_SUBJECT_ID__": bootstrap_subject_id,
+            "__BOOTSTRAP_ISSUER__": bootstrap_issuer.replace("'", "''"),
+            "__BOOTSTRAP_EXTERNAL_SUBJECT__": bootstrap_external_subject.replace(
+                "'", "''"
+            ),
+            "__TAXONOMY_VERSION__": required("TAXONOMY_VERSION"),
+            "productivity_app": role_identifiers[app_user],
+            "productivity_analytics": role_identifiers[analytics_user],
+        }
+        migrations = []
+        setup_dir = Path(__file__).parent
+        for migration in discover_migrations(setup_dir):
+            sql = migration.sql
+            for placeholder, value in replacements.items():
+                sql = sql.replace(placeholder, value)
+            migrations.append(
+                Migration(
+                    migration.version,
+                    migration.path,
+                    sql,
+                    migration.checksum,
+                )
+            )
+        completed = apply_migrations(cursor, migrations)
+        print(f"[OK] Applied migrations: {completed or ['none']}")
         cursor.execute(
             f"ALTER ROLE {role_identifiers[app_user]} "
             f"LOGIN PASSWORD {quote_literal(app_password)}"
@@ -102,7 +146,7 @@ def main() -> None:
             f"{quote_literal(analytics_password)}"
         )
         if required("SEED_DEMO").lower() == "true":
-            seed = Path("seed_demo.sql").read_text(encoding="utf-8")
+            seed = (setup_dir / "seed_demo.sql").read_text(encoding="utf-8")
             seed = seed.replace("__EMBEDDING_MODEL__", embedding_model)
             cursor.execute(seed)
         cursor.execute(

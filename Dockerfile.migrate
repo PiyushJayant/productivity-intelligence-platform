@@ -3,9 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 COPY requirements-migrate.txt .
 RUN pip install --no-cache-dir -r requirements-migrate.txt
-COPY setup/migrate.py ./migrate.py
-COPY setup/lifecycle.py ./lifecycle.py
-COPY setup/alloydb_schema.sql ./alloydb_schema.sql
-COPY setup/seed_demo.sql ./seed_demo.sql
+COPY setup ./setup
 
-CMD ["python", "migrate.py"]
+WORKDIR /app
+CMD ["python", "-m", "setup.migrate"]

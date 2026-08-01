@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=setup/common.sh
 source "${SCRIPT_DIR}/common.sh"
 
+require_phase5
 preflight
 
 APIS=(
@@ -14,10 +15,13 @@ APIS=(
   bigquery.googleapis.com
   bigqueryconnection.googleapis.com
   billingbudgets.googleapis.com
+  accesscontextmanager.googleapis.com
   cloudbuild.googleapis.com
+  cloudkms.googleapis.com
   cloudscheduler.googleapis.com
   compute.googleapis.com
   iam.googleapis.com
+  identitytoolkit.googleapis.com
   monitoring.googleapis.com
   run.googleapis.com
   secretmanager.googleapis.com
@@ -25,6 +29,7 @@ APIS=(
   serviceusage.googleapis.com
 )
 gcloud services enable "${APIS[@]}" --project="${PROJECT_ID}"
+"${SCRIPT_DIR}/security_setup.sh"
 
 BILLING_ACCOUNT="$(gcloud billing projects describe "${PROJECT_ID}" \
   --format='value(billingAccountName.basename())')"
@@ -133,6 +138,7 @@ grant_project_role "${ALLOYDB_SERVICE_AGENT}" roles/aiplatform.user
 ensure_secret_from_env "${ADMIN_DB_SECRET}" "${ADMIN_DB_PASSWORD}"
 ensure_secret_from_env "${APP_DB_SECRET}" "${APP_DB_PASSWORD}"
 ensure_secret_from_env "${ANALYTICS_DB_SECRET}" "${ANALYTICS_DB_PASSWORD}"
+ensure_secret_from_env "${PSEUDONYMIZATION_SECRET}" "${PSEUDONYMIZATION_KEY}"
 
 gcloud secrets add-iam-policy-binding "${APP_DB_SECRET}" --project="${PROJECT_ID}" \
   --member="serviceAccount:${TOOLBOX_SA}" --role=roles/secretmanager.secretAccessor \
@@ -142,6 +148,12 @@ for secret in "${ADMIN_DB_SECRET}" "${APP_DB_SECRET}" "${ANALYTICS_DB_SECRET}"; 
     --member="serviceAccount:${MIGRATION_SA}" --role=roles/secretmanager.secretAccessor \
     --condition=None --quiet >/dev/null
 done
+gcloud secrets add-iam-policy-binding "${PSEUDONYMIZATION_SECRET}" \
+  --project="${PROJECT_ID}" --member="serviceAccount:${ASSISTANT_SA}" \
+  --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null
+gcloud secrets add-iam-policy-binding "${PSEUDONYMIZATION_SECRET}" \
+  --project="${PROJECT_ID}" --member="serviceAccount:${MIGRATION_SA}" \
+  --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null
 
 if ! gcloud compute networks describe "${VPC_NETWORK}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud compute networks create "${VPC_NETWORK}" --subnet-mode=custom \
@@ -201,10 +213,18 @@ if ! gcloud alloydb clusters describe "${ALLOYDB_CLUSTER}" --region="${REGION}" 
   chmod 600 "${flags_file}"
   trap 'rm -f "${flags_file}"' EXIT
   printf '%s\n' "--password: ${ADMIN_DB_PASSWORD}" >"${flags_file}"
-  gcloud alloydb clusters create "${ALLOYDB_CLUSTER}" --region="${REGION}" \
-    --network="projects/${PROJECT_ID}/global/networks/${VPC_NETWORK}" \
-    --allocated-ip-range-name="${PSA_RANGE_NAME}" --project="${PROJECT_ID}" \
-    --flags-file="${flags_file}"
+  cluster_args=(
+    "${ALLOYDB_CLUSTER}" "--region=${REGION}"
+    "--network=projects/${PROJECT_ID}/global/networks/${VPC_NETWORK}"
+    "--allocated-ip-range-name=${PSA_RANGE_NAME}" "--project=${PROJECT_ID}"
+    "--flags-file=${flags_file}"
+  )
+  if [[ "${ENABLE_CMEK}" == "true" ]]; then
+    cluster_args+=(
+      "--kms-key=projects/${PROJECT_ID}/locations/${REGION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_ALLOYDB_KEY}"
+    )
+  fi
+  gcloud alloydb clusters create "${cluster_args[@]}"
   rm -f "${flags_file}"
   trap - EXIT
 fi
@@ -249,6 +269,24 @@ else
       --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
       --activation-policy="${ALLOYDB_ACTIVATION_POLICY}" \
       --project="${PROJECT_ID}" --quiet
+  fi
+fi
+
+if [[ "${ENABLE_ALLOYDB_READ_POOL}" == "true" ]]; then
+  if ! gcloud alloydb instances describe "${ALLOYDB_READ_POOL}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud alloydb instances create "${ALLOYDB_READ_POOL}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --instance-type=READ_POOL \
+      --read-pool-node-count="${ALLOYDB_READ_POOL_NODE_COUNT}" \
+      --machine-type="${ALLOYDB_READ_POOL_MACHINE_TYPE}" \
+      --project="${PROJECT_ID}"
+  fi
+  if [[ "${ALLOYDB_ACTIVATION_POLICY}" == "NEVER" ]]; then
+    gcloud alloydb instances update "${ALLOYDB_READ_POOL}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --activation-policy=NEVER --project="${PROJECT_ID}" --quiet
   fi
 fi
 

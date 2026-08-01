@@ -15,7 +15,9 @@ This will delete the Productivity Intelligence Platform resources from:
   AlloyDB cluster: ${ALLOYDB_CLUSTER}
   BigQuery dataset/connection: ${BIGQUERY_DATASET}, ${BIGQUERY_CONNECTION_ID}
   Artifact Registry: ${AR_REPO}
-  Secrets: ${ADMIN_DB_SECRET}, ${APP_DB_SECRET}, ${ANALYTICS_DB_SECRET}
+  Secrets: ${ADMIN_DB_SECRET}, ${APP_DB_SECRET}, ${ANALYTICS_DB_SECRET}, ${PSEUDONYMIZATION_SECRET}
+  Optional CDC stream: ${DATASTREAM_STREAM}
+  Optional KMS key ring: ${KMS_KEYRING}
   Runtime service accounts: ${ASSISTANT_SA}, ${TOOLBOX_SA}, ${MIGRATION_SA}, ${LIFECYCLE_SA}, ${SCHEDULER_SA}
   Monitoring: Productivity Intelligence policies, uptime check, and log metrics
   Billing budget: ${BUDGET_NAME}
@@ -64,13 +66,35 @@ gcloud logging sinks update _Default --project="${PROJECT_ID}" \
 "${BQ_BIN}" rm -r -f -d "${PROJECT_ID}:${BIGQUERY_DATASET}" 2>/dev/null || true
 "${BQ_BIN}" rm -f --connection --location="${REGION}" \
   "${PROJECT_ID}.${REGION}.${BIGQUERY_CONNECTION_ID}" 2>/dev/null || true
+gcloud datastream streams delete "${DATASTREAM_STREAM}" \
+  --location="${DATASTREAM_LOCATION}" --project="${PROJECT_ID}" \
+  --quiet 2>/dev/null || true
+for profile in "${DATASTREAM_SOURCE_PROFILE}" "${DATASTREAM_DESTINATION_PROFILE}"; do
+  gcloud datastream connection-profiles delete "${profile}" \
+    --location="${DATASTREAM_LOCATION}" --project="${PROJECT_ID}" \
+    --quiet 2>/dev/null || true
+done
 gcloud alloydb clusters delete "${ALLOYDB_CLUSTER}" --region="${REGION}" \
   --project="${PROJECT_ID}" --force --quiet 2>/dev/null || true
 gcloud artifacts repositories delete "${AR_REPO}" --location="${REGION}" \
   --project="${PROJECT_ID}" --quiet 2>/dev/null || true
-for secret in "${ADMIN_DB_SECRET}" "${APP_DB_SECRET}" "${ANALYTICS_DB_SECRET}"; do
+for secret in "${ADMIN_DB_SECRET}" "${APP_DB_SECRET}" "${ANALYTICS_DB_SECRET}" \
+    "${PSEUDONYMIZATION_SECRET}"; do
   gcloud secrets delete "${secret}" --project="${PROJECT_ID}" --quiet 2>/dev/null || true
 done
+if [[ "${ENABLE_CMEK}" == "true" ]]; then
+  for key in "${KMS_ALLOYDB_KEY}" "${KMS_BIGQUERY_KEY}" "${KMS_SECRET_KEY}"; do
+    while IFS= read -r version; do
+      [[ -z "${version}" ]] || gcloud kms keys versions destroy "${version}" \
+        --key="${key}" --keyring="${KMS_KEYRING}" --location="${REGION}" \
+        --project="${PROJECT_ID}" --quiet 2>/dev/null || true
+    done < <(gcloud kms keys versions list --key="${key}" \
+      --keyring="${KMS_KEYRING}" --location="${REGION}" \
+      --project="${PROJECT_ID}" --filter='state=ENABLED' \
+      --format='value(name.basename())' 2>/dev/null)
+  done
+  echo "[INFO] Empty Cloud KMS key/key-ring metadata is retained because Google Cloud does not permit deleting it."
+fi
 
 for role in roles/aiplatform.user roles/mcp.toolUser roles/bigquery.jobUser \
     roles/bigquery.dataViewer roles/bigquery.connectionUser roles/logging.logWriter \

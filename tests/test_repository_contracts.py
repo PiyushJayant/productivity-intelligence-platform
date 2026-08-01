@@ -38,6 +38,36 @@ def test_toolbox_configuration_is_valid_and_parameterized():
     assert "delete_notes" in config["tools"]
     assert "delete_events" in config["tools"]
     assert "string_to_array" in statements
+    for tool in config["tools"].values():
+        parameter_names = [parameter["name"] for parameter in tool["parameters"]]
+        assert parameter_names[-2:] == ["tenant_id", "subject_id"]
+        assert "tenant_id" in tool["statement"]
+        positions = {
+            int(position) for position in re.findall(r"\$(\d+)", tool["statement"])
+        }
+        assert positions == set(range(1, len(parameter_names) + 1))
+
+
+def test_identity_and_tenant_boundary_is_fail_closed():
+    identity = (
+        ROOT / "productivity_intelligence" / "identity.py"
+    ).read_text(encoding="utf-8")
+    runtime_tools = (
+        ROOT / "productivity_intelligence" / "tools.py"
+    ).read_text(encoding="utf-8")
+    schema = (ROOT / "setup" / "alloydb_schema.sql").read_text(encoding="utf-8")
+    provision = (ROOT / "setup" / "provision.sh").read_text(encoding="utf-8")
+
+    assert "verify_firebase_token" in identity
+    assert "token issuer is invalid" in identity
+    assert "No verified request identity" in identity
+    assert '"tenant_id": current_tenant_id' in runtime_tools
+    assert '"subject_id": current_subject_id' in runtime_tools
+    assert "strict=True" in runtime_tools
+    assert "CREATE TABLE IF NOT EXISTS tenant_memberships" in schema
+    assert "enforce_active_membership" in schema
+    assert "004_identity_and_tenant_ownership" in schema
+    assert "identitytoolkit.googleapis.com" in provision
 
 
 def test_schema_uses_exact_vector_search_without_scann_or_password():
@@ -79,6 +109,33 @@ def test_assistant_uses_global_vertex_endpoint_by_default():
 def test_runtime_includes_cross_platform_timezone_database():
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
     assert "tzdata==" in requirements
+
+
+def test_migration_image_contains_the_complete_versioned_migration_runtime():
+    dockerfile = (ROOT / "Dockerfile.migrate").read_text(encoding="utf-8")
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+
+    assert "COPY setup ./setup" in dockerfile
+    assert '["python", "-m", "setup.migrate"]' in dockerfile
+    for required_path in (
+        "!setup/__init__.py",
+        "!setup/migration_runner.py",
+        "!setup/privacy_job.py",
+        "!setup/migrations/",
+        "!setup/migrations/*.sql",
+    ):
+        assert required_path in dockerignore
+
+
+def test_environment_initializer_generates_every_local_secret():
+    initializer = (ROOT / "setup" / "init_env.py").read_text(encoding="utf-8")
+    for secret in (
+        "ADMIN_DB_PASSWORD",
+        "APP_DB_PASSWORD",
+        "ANALYTICS_DB_PASSWORD",
+        "PSEUDONYMIZATION_KEY",
+    ):
+        assert f'"{secret}"' in initializer
 
 
 def test_deployment_requires_an_explicit_project_and_installs_monitoring():
@@ -160,16 +217,25 @@ def test_builds_are_immutable_and_reused():
     assert "$(date " not in deploy
 
 
-def test_bigquery_aggregation_is_pushed_to_alloydb():
+def test_bigquery_bounded_procedure_aggregates_inside_alloydb():
     setup = (ROOT / "setup" / "bigquery_setup.py").read_text(encoding="utf-8")
-    assert setup.count("FROM EXTERNAL_QUERY(") == 2
-    assert setup.count("FROM activity_events") == 3
+    assert setup.count("FROM EXTERNAL_QUERY(") == 1
+    assert "CREATE OR REPLACE PROCEDURE" in setup
+    assert "p_start_date DATE" in setup
+    assert "p_end_date DATE" in setup
+    assert "p_tenant_id STRING" in setup
+    assert "p_subject_id STRING" in setup
+    assert "DATE_DIFF(p_end_date, p_start_date, DAY)" in setup
+    assert "e.occurred_at >= b.start_at" in setup
+    assert "e.occurred_at < b.end_at" in setup
+    assert '"SELECT * FROM EXTERNAL_QUERY(%T, %T)"' in setup
+    assert "BIGQUERY_ANALYTICS_PROCEDURE" in setup
     assert "FROM tasks" not in setup
     assert "FROM notes" not in setup
     assert "FROM events" not in setup
     assert "latest_status" in setup
+    assert "DROP VIEW IF EXISTS" in setup
     assert setup.count("AT TIME ZONE '{timezone}'") >= 2
-    assert "GROUP BY created.date, created.priority" in setup
 
 
 def test_destructive_agent_prompts_require_confirmation():
@@ -212,8 +278,9 @@ def test_analytics_agent_exposes_only_parameterized_domain_query():
 
     assert "get_productivity_trends" in agent
     assert "execute_sql_readonly" not in agent
-    assert "SAFE_DIVIDE(task.completed_tasks, task.total_tasks)" in tools
-    assert "AVG(completion_rate)" not in tools
+    assert "CALL `{dataset}.{settings.bigquery_analytics_procedure}`" in tools
+    assert "ANALYTICS_MAX_RANGE_DAYS" not in tools
+    assert "analytics_max_range_days" in tools
 
 
 def test_scheduled_lifecycle_is_opt_in_private_and_cleanable():
@@ -239,7 +306,8 @@ def test_candidate_verification_runs_mode_aware_end_to_end_smoke_checks():
 
     assert '"${readiness_file}" "${APP_MODE}"' in verify
     assert '"${SCRIPT_DIR}/smoke_test.py"' in verify
-    assert '--assistant-url="${assistant_url}"' in verify
+    assert 'assistant_smoke_arg=("--assistant-url=${assistant_url}")' in verify
+    assert 'if [[ "${AUTH_MODE}" == "disabled" ]]' in verify
     assert '--connection="${BIGQUERY_CONNECTION_ID}"' in verify
     assert 'if [[ "${APP_MODE}" == "full" ]]' in verify
 
@@ -261,3 +329,16 @@ def test_complete_suspend_is_reversible_and_quiesces_request_driven_cost():
     assert "suspend_alloydb" in suspend
     assert "restore_assistant_public_access" in resume
     assert "resume_alloydb" in resume
+
+
+def test_billing_gate_allows_only_suspension_and_cost_inspection():
+    deploy = (ROOT / "setup" / "deploy.sh").read_text(encoding="utf-8")
+    phase5 = (ROOT / "setup" / "phase5.sh").read_text(encoding="utf-8")
+
+    assert '"${ACTION}" != "suspend" && "${ACTION}" != "cost-status"' in deploy
+    assert "require_phase5" in deploy
+    assert "preflight_project_access" in deploy
+    assert 'verify) "${SCRIPT_DIR}/deploy.sh" verify' in phase5
+    assert 'promote) "${SCRIPT_DIR}/deploy.sh" promote' in phase5
+    assert '"${SCRIPT_DIR}/deploy.sh" rollback "$2"' in phase5
+    assert 'rollback) rollback "${2:-}"' in deploy

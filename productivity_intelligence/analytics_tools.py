@@ -3,13 +3,26 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 
+from google.api_core.exceptions import GoogleAPICallError
 from google.cloud import bigquery
 
 from productivity_intelligence.config import settings
+from productivity_intelligence.identity import (
+    current_subject_id,
+    current_subject_token,
+    current_tenant_id,
+)
+from productivity_intelligence.resilience import retry_with_backoff
 
 VALID_GRAINS = {"day", "month"}
+LOGGER = logging.getLogger(__name__)
+
+
+class AnalyticsUnavailableError(RuntimeError):
+    """Safe, user-facing analytics dependency failure."""
 
 
 def _iso_date(value: str, field: str) -> date:
@@ -43,67 +56,81 @@ def get_productivity_trends(
     end = _iso_date(end_date, "end_date")
     if end < start:
         raise ValueError("end_date must not be before start_date")
+    range_days = (end - start).days + 1
+    if range_days > settings.analytics_max_range_days:
+        raise ValueError(
+            "requested period exceeds the configured maximum of "
+            f"{settings.analytics_max_range_days} days"
+        )
     if grain not in VALID_GRAINS:
         raise ValueError(f"grain must be one of {sorted(VALID_GRAINS)}")
 
-    trunc_part = "DAY" if grain == "day" else "MONTH"
-    period_format = "%Y-%m-%d" if grain == "day" else "%Y-%m"
     dataset = f"{settings.google_cloud_project}.{settings.bigquery_dataset}"
-    query = f"""
-    WITH task AS (
-      SELECT
-        DATE_TRUNC(date, {trunc_part}) AS period,
-        SUM(total_tasks) AS total_tasks,
-        SUM(completed_tasks) AS completed_tasks,
-        SUM(pending_tasks) AS pending_tasks,
-        SUM(in_progress_tasks) AS in_progress_tasks
-      FROM `{dataset}.task_summary`
-      WHERE date BETWEEN @start_date AND @end_date
-      GROUP BY period
-    ),
-    activity AS (
-      SELECT
-        DATE_TRUNC(date, {trunc_part}) AS period,
-        SUM(tasks_created) AS tasks_created,
-        SUM(tasks_completed) AS tasks_completed,
-        SUM(notes_created) AS notes_created,
-        SUM(events_scheduled) AS events_scheduled
-      FROM `{dataset}.daily_activity`
-      WHERE date BETWEEN @start_date AND @end_date
-      GROUP BY period
-    )
-    SELECT
-      FORMAT_DATE('{period_format}', COALESCE(task.period, activity.period)) AS period,
-      COALESCE(task.total_tasks, 0) AS total_tasks,
-      COALESCE(task.completed_tasks, 0) AS completed_tasks,
-      COALESCE(task.pending_tasks, 0) AS pending_tasks,
-      COALESCE(task.in_progress_tasks, 0) AS in_progress_tasks,
-      SAFE_DIVIDE(task.completed_tasks, task.total_tasks) AS completion_rate,
-      COALESCE(activity.tasks_created, 0) AS tasks_created,
-      COALESCE(activity.tasks_completed, 0) AS tasks_completed,
-      COALESCE(activity.notes_created, 0) AS notes_created,
-      COALESCE(activity.events_scheduled, 0) AS events_scheduled
-    FROM task
-    FULL OUTER JOIN activity USING (period)
-    ORDER BY period
-    """
+    if settings.analytics_backend == "federated":
+        query = (
+            f"CALL `{dataset}.{settings.bigquery_analytics_procedure}`"
+            "(@start_date, @end_date, @grain, @tenant_id, @subject_id)"
+        )
+    else:
+        query = (
+            f"SELECT * FROM `{dataset}.{settings.bigquery_native_tvf}`"
+            "(@start_date, @end_date, @grain, @tenant_id, @subject_token)"
+        )
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("start_date", "DATE", start),
             bigquery.ScalarQueryParameter("end_date", "DATE", end),
+            bigquery.ScalarQueryParameter("grain", "STRING", grain),
+            bigquery.ScalarQueryParameter(
+                "tenant_id", "STRING", current_tenant_id()
+            ),
+            bigquery.ScalarQueryParameter(
+                "subject_id" if settings.analytics_backend == "federated"
+                else "subject_token",
+                "STRING",
+                current_subject_id() if settings.analytics_backend == "federated"
+                else current_subject_token(),
+            ),
         ]
     )
-    rows = [
-        {
-            key: (round(value, 4) if isinstance(value, float) else value)
-            for key, value in dict(row.items()).items()
-        }
-        for row in bigquery.Client(
-            project=settings.google_cloud_project
-        ).query(query, job_config=job_config).result()
-    ]
+    job_config.job_timeout_ms = settings.analytics_query_timeout_seconds * 1000
+    try:
+        def execute_query():
+            job = bigquery.Client(project=settings.google_cloud_project).query(
+                query,
+                job_config=job_config,
+                location=settings.region,
+            )
+            return job.result(timeout=settings.analytics_query_timeout_seconds)
+
+        result = retry_with_backoff(
+            execute_query,
+            attempts=settings.analytics_retry_attempts,
+            base_seconds=settings.analytics_retry_base_seconds,
+            max_seconds=settings.analytics_retry_max_seconds,
+            retryable=(GoogleAPICallError, TimeoutError),
+        )
+        rows = [
+            {
+                key: (round(value, 4) if isinstance(value, float) else value)
+                for key, value in dict(row.items()).items()
+            }
+            for row in result
+        ]
+    except (GoogleAPICallError, TimeoutError) as error:
+        LOGGER.warning(
+            "Bounded productivity analytics query failed",
+            exc_info=True,
+        )
+        raise AnalyticsUnavailableError(
+            "Productivity analytics is temporarily unavailable. Please retry shortly."
+        ) from error
     return json.dumps(
         {
+            "contract_version": (
+                "v2" if settings.analytics_backend == "federated" else "v3"
+            ),
+            "backend": settings.analytics_backend,
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
             "grain": grain,

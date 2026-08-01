@@ -39,17 +39,15 @@ def _build_analytics_agent() -> LlmAgent | None:
         name="analytics_agent",
         description=(
             "Provides productivity analytics and insights by querying the live "
-            f"AlloyDB-backed BigQuery views in `{settings.bigquery_dataset}`."
+            "tenant-scoped AlloyDB-backed BigQuery routine in "
+            f"`{settings.bigquery_dataset}`."
         ),
         instruction=f"""You are a productivity analytics assistant.
 
 BigQuery dataset: `{settings.google_cloud_project}.{settings.bigquery_dataset}`
 
-Approved views:
-- `task_summary`: date, priority, total_tasks, completed_tasks, pending_tasks,
-  in_progress_tasks, completion_rate
-- `daily_activity`: date, tasks_created, tasks_completed, notes_created,
-  events_scheduled
+Approved contract: the tenant-scoped `{settings.bigquery_analytics_procedure}`
+routine, exposed only through `get_productivity_trends`.
 
 Use `resolve_reporting_period` before querying. The phrase "last year" is
 ambiguous: ask whether the user means a rolling 12 months or the previous

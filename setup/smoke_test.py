@@ -131,6 +131,11 @@ def main() -> None:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--connection", required=True)
     parser.add_argument("--timezone", required=True)
+    parser.add_argument("--auth-mode", required=True)
+    parser.add_argument("--identity-project", required=True)
+    parser.add_argument("--bootstrap-subject", required=True)
+    parser.add_argument("--tenant-id", required=True)
+    parser.add_argument("--demo-subject-id", required=True)
     args = parser.parse_args()
 
     marker = f"smoke-{uuid.uuid4().hex[:10]}"
@@ -142,15 +147,31 @@ def main() -> None:
     token = identity_token(args.service_account, args.toolbox_url)
     headers = {"Authorization": f"Bearer {token}"}
     client = ToolboxSyncClient(args.toolbox_url, client_headers=headers)
+    if args.auth_mode == "identity_platform":
+        issuer = f"https://securetoken.google.com/{args.identity_project}"
+        subject_id = uuid.uuid5(
+            uuid.UUID("2ea7b872-6bc4-4a37-9a58-75fd18d94086"),
+            f"{issuer}\x1f{args.bootstrap_subject}",
+        )
+    else:
+        subject_id = uuid.UUID(args.demo_subject_id)
+    bound_identity = {
+        "tenant_id": str(uuid.UUID(args.tenant_id)),
+        "subject_id": str(subject_id),
+    }
     task_id = note_id = event_id = None
     try:
-        create_task = client.load_tool("create_task")
-        update_task = client.load_tool("update_task_status")
-        delete_task = client.load_tool("delete_task")
-        create_note = client.load_tool("create_note")
-        search_notes = client.load_tool("search_notes_semantic")
-        create_event = client.load_tool("create_event")
-        list_events = client.load_tool("list_events")
+        create_task = client.load_tool("create_task", bound_params=bound_identity)
+        update_task = client.load_tool(
+            "update_task_status", bound_params=bound_identity
+        )
+        delete_task = client.load_tool("delete_task", bound_params=bound_identity)
+        create_note = client.load_tool("create_note", bound_params=bound_identity)
+        search_notes = client.load_tool(
+            "search_notes_semantic", bound_params=bound_identity
+        )
+        create_event = client.load_tool("create_event", bound_params=bound_identity)
+        list_events = client.load_tool("list_events", bound_params=bound_identity)
 
         task_rows = decode_rows(
             create_task(
@@ -210,6 +231,7 @@ def main() -> None:
           FROM activity_events
           WHERE entity_type = 'task'
             AND entity_id = {deleted_task_id}
+            AND tenant_id = '{args.tenant_id}'::uuid
             AND event_type IN ('task_completed', 'task_deleted')
             AND is_synthetic
           '''
@@ -229,13 +251,6 @@ def main() -> None:
                     "deleted task activity was not preserved through federation"
                 )
             time.sleep(5)
-        list(
-            bq.query(
-                f"SELECT * FROM `{args.project}.{args.dataset}.daily_activity` LIMIT 0",
-                location=args.region,
-            ).result()
-        )
-
         missing = decode_rows(delete_task(task_id=2_147_483_647))
         assert not missing, "deleting a nonexistent task must return an empty/not-found result"
         checks = (
@@ -253,7 +268,9 @@ def main() -> None:
             if record_id is not None:
                 try:
                     id_parameter = tool_name.removeprefix("delete_") + "_id"
-                    client.load_tool(tool_name)(**{id_parameter: record_id})
+                    client.load_tool(
+                        tool_name, bound_params=bound_identity
+                    )(**{id_parameter: record_id})
                 except Exception as exc:  # cleanup should not mask the primary result
                     print(f"[WARN] Could not clean synthetic {tool_name}: {type(exc).__name__}")
         client.close()

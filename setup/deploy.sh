@@ -7,6 +7,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 ACTION="${1:-full}"
+if [[ "${ACTION}" != "suspend" && "${ACTION}" != "cost-status" ]]; then
+  require_phase5
+fi
 BUILD_TAG_FILE="${REPO_ROOT}/.deploy-build-tag"
 if [[ "${ACTION}" == "build" || "${ACTION}" == "full" ]]; then
   BUILD_TAG="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
@@ -85,7 +88,7 @@ run_migration() {
     --subnet="${VPC_SUBNET}" --vpc-egress=private-ranges-only \
     --cpu="${MIGRATION_CPU}" --memory="${MIGRATION_MEMORY}" \
     --labels="${RESOURCE_LABELS}" \
-    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ADMIN_DB_USER=${ADMIN_DB_USER},ALLOYDB_USER=${ALLOYDB_USER},ANALYTICS_DB_USER=${ANALYTICS_DB_USER},EMBEDDING_MODEL=${EMBEDDING_MODEL},EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS},SEED_DEMO=${SEED_DEMO}" \
+    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ADMIN_DB_USER=${ADMIN_DB_USER},ALLOYDB_USER=${ALLOYDB_USER},ANALYTICS_DB_USER=${ANALYTICS_DB_USER},EMBEDDING_MODEL=${EMBEDDING_MODEL},EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS},SEED_DEMO=${SEED_DEMO},AUTH_MODE=${AUTH_MODE},IDENTITY_PLATFORM_PROJECT_ID=${IDENTITY_PLATFORM_PROJECT_ID},DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID},DEMO_SUBJECT_ID=${DEMO_SUBJECT_ID},BOOTSTRAP_IDP_SUBJECT=${BOOTSTRAP_IDP_SUBJECT}" \
     --set-secrets="ADMIN_DB_PASSWORD=${ADMIN_DB_SECRET}:${admin_version},APP_DB_PASSWORD=${APP_DB_SECRET}:${app_version},ANALYTICS_DB_PASSWORD=${ANALYTICS_DB_SECRET}:${analytics_version}" \
     --max-retries=0 --task-timeout="${MIGRATION_TIMEOUT}s"
   gcloud run jobs execute "${MIGRATION_JOB_NAME}" --region="${REGION}" \
@@ -167,7 +170,7 @@ ensure_bigquery_connection() {
   gcloud secrets versions access \
     "$(secret_version "${ANALYTICS_DB_SECRET}")" --secret="${ANALYTICS_DB_SECRET}" \
     --project="${PROJECT_ID}" --out-file="${password_file}" >/dev/null
-  resource="//alloydb.googleapis.com/projects/${PROJECT_ID}/locations/${REGION}/clusters/${ALLOYDB_CLUSTER}/instances/${ALLOYDB_INSTANCE}"
+  resource="//alloydb.googleapis.com/projects/${PROJECT_ID}/locations/${REGION}/clusters/${ALLOYDB_CLUSTER}/instances/${ANALYTICS_ALLOYDB_INSTANCE}"
   "${PYTHON_BIN}" - "${payload}" "${resource}" "${ALLOYDB_DATABASE}" \
       "${ANALYTICS_DB_USER}" "${password_file}" <<'PY'
 import json, sys
@@ -218,12 +221,17 @@ PY
 }
 
 deploy_assistant() {
-  local toolbox_url
+  local toolbox_url pseudonymization_version
   local -a traffic_args=(--tag=candidate)
   toolbox_url="$(gcloud run services describe "${TOOLBOX_SERVICE_NAME}" \
     --region="${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')"
   [[ "${toolbox_url}" == https://* ]] || {
     echo "Error: deployed Toolbox URL is invalid." >&2
+    exit 1
+  }
+  pseudonymization_version="$(secret_version "${PSEUDONYMIZATION_SECRET}")"
+  [[ "${pseudonymization_version}" =~ ^[0-9]+$ ]] || {
+    echo "Error: no numeric pseudonymization secret version is available." >&2
     exit 1
   }
 
@@ -240,13 +248,16 @@ deploy_assistant() {
     --concurrency="${ASSISTANT_CONCURRENCY}" --timeout="${ASSISTANT_TIMEOUT}" \
     --cpu-throttling --labels="${RESOURCE_LABELS}" \
     "${traffic_args[@]}" \
-    --set-env-vars="APP_MODE=${APP_MODE},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI},MODEL=${MODEL},EMBEDDING_MODEL=${EMBEDDING_MODEL},TOOLBOX_URL=${toolbox_url},TOOLBOX_AUDIENCE=${toolbox_url},BIGQUERY_MCP_URL=${BIGQUERY_MCP_URL},BIGQUERY_DATASET=${BIGQUERY_DATASET},BIGQUERY_CONNECTION_ID=${BIGQUERY_CONNECTION_ID},ROUTER_MAX_OUTPUT_TOKENS=${ROUTER_MAX_OUTPUT_TOKENS},ROUTER_THINKING_BUDGET=${ROUTER_THINKING_BUDGET},SPECIALIST_MAX_OUTPUT_TOKENS=${SPECIALIST_MAX_OUTPUT_TOKENS},SPECIALIST_THINKING_BUDGET=${SPECIALIST_THINKING_BUDGET},ANALYTICS_MAX_OUTPUT_TOKENS=${ANALYTICS_MAX_OUTPUT_TOKENS},ANALYTICS_THINKING_BUDGET=${ANALYTICS_THINKING_BUDGET},AGENT_CONTEXT_MAX_EVENTS=${AGENT_CONTEXT_MAX_EVENTS},MODEL_TEMPERATURE=${MODEL_TEMPERATURE},DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE},DEFAULT_PAGE_SIZE=${DEFAULT_PAGE_SIZE},LOG_LEVEL=${LOG_LEVEL},STRUCTURED_LOGGING=${STRUCTURED_LOGGING},ENABLE_REQUEST_LOGGING=${ENABLE_REQUEST_LOGGING},REQUEST_ID_HEADER=${REQUEST_ID_HEADER}"
+    --set-env-vars="APP_MODE=${APP_MODE},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},REGION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI},MODEL=${MODEL},EMBEDDING_MODEL=${EMBEDDING_MODEL},TOOLBOX_URL=${toolbox_url},TOOLBOX_AUDIENCE=${toolbox_url},BIGQUERY_MCP_URL=${BIGQUERY_MCP_URL},BIGQUERY_DATASET=${BIGQUERY_DATASET},BIGQUERY_CONNECTION_ID=${BIGQUERY_CONNECTION_ID},BIGQUERY_ANALYTICS_PROCEDURE=${BIGQUERY_ANALYTICS_PROCEDURE},ANALYTICS_BACKEND=${ANALYTICS_BACKEND},BIGQUERY_NATIVE_TVF=${BIGQUERY_NATIVE_TVF},ANALYTICS_RETRY_ATTEMPTS=${ANALYTICS_RETRY_ATTEMPTS},ANALYTICS_RETRY_BASE_SECONDS=${ANALYTICS_RETRY_BASE_SECONDS},ANALYTICS_RETRY_MAX_SECONDS=${ANALYTICS_RETRY_MAX_SECONDS},PRIVACY_RETENTION_DAYS=${PRIVACY_RETENTION_DAYS},TAXONOMY_VERSION=${TAXONOMY_VERSION},ROUTER_MAX_OUTPUT_TOKENS=${ROUTER_MAX_OUTPUT_TOKENS},ROUTER_THINKING_BUDGET=${ROUTER_THINKING_BUDGET},SPECIALIST_MAX_OUTPUT_TOKENS=${SPECIALIST_MAX_OUTPUT_TOKENS},SPECIALIST_THINKING_BUDGET=${SPECIALIST_THINKING_BUDGET},ANALYTICS_MAX_OUTPUT_TOKENS=${ANALYTICS_MAX_OUTPUT_TOKENS},ANALYTICS_THINKING_BUDGET=${ANALYTICS_THINKING_BUDGET},ANALYTICS_MAX_RANGE_DAYS=${ANALYTICS_MAX_RANGE_DAYS},ANALYTICS_QUERY_TIMEOUT_SECONDS=${ANALYTICS_QUERY_TIMEOUT_SECONDS},AGENT_CONTEXT_MAX_EVENTS=${AGENT_CONTEXT_MAX_EVENTS},MODEL_TEMPERATURE=${MODEL_TEMPERATURE},DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE},DEFAULT_PAGE_SIZE=${DEFAULT_PAGE_SIZE},LOG_LEVEL=${LOG_LEVEL},STRUCTURED_LOGGING=${STRUCTURED_LOGGING},ENABLE_REQUEST_LOGGING=${ENABLE_REQUEST_LOGGING},REQUEST_ID_HEADER=${REQUEST_ID_HEADER},AUTH_MODE=${AUTH_MODE},IDENTITY_PLATFORM_PROJECT_ID=${IDENTITY_PLATFORM_PROJECT_ID},IDENTITY_PLATFORM_TENANT_ID=${IDENTITY_PLATFORM_TENANT_ID:-},IDENTITY_TENANT_CLAIM=${IDENTITY_TENANT_CLAIM},IDENTITY_ROLE_CLAIM=${IDENTITY_ROLE_CLAIM},DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID},DEMO_SUBJECT_ID=${DEMO_SUBJECT_ID},AUTH_CLOCK_SKEW_SECONDS=${AUTH_CLOCK_SKEW_SECONDS}" \
+    --set-secrets="PSEUDONYMIZATION_KEY=${PSEUDONYMIZATION_SECRET}:${pseudonymization_version}"
 }
 
 setup_analytics() {
   GOOGLE_CLOUD_PROJECT="${PROJECT_ID}" REGION="${REGION}" \
     BIGQUERY_DATASET="${BIGQUERY_DATASET}" \
     BIGQUERY_CONNECTION_ID="${BIGQUERY_CONNECTION_ID}" \
+    BIGQUERY_ANALYTICS_PROCEDURE="${BIGQUERY_ANALYTICS_PROCEDURE}" \
+    ANALYTICS_MAX_RANGE_DAYS="${ANALYTICS_MAX_RANGE_DAYS}" \
     DEFAULT_TIMEZONE="${DEFAULT_TIMEZONE}" \
     "${PYTHON_BIN}" "${SCRIPT_DIR}/bigquery_setup.py"
 }
@@ -434,12 +445,22 @@ if not data.get("ready") or sorted(data.get("loaded_agents", [])) != expected:
     raise SystemExit(f"candidate readiness mismatch: {data}")
 PY
   if [[ "${APP_MODE}" == "full" ]]; then
+    local -a assistant_smoke_arg=()
+    if [[ "${AUTH_MODE}" == "disabled" ]]; then
+      assistant_smoke_arg=("--assistant-url=${assistant_url}")
+    else
+      echo "[SKIP] Conversational smoke requires an end-user Identity Platform token."
+    fi
     "${PYTHON_BIN}" "${SCRIPT_DIR}/smoke_test.py" \
       --project="${PROJECT_ID}" --region="${REGION}" \
       --toolbox-url="${toolbox_url}" --service-account="${ASSISTANT_SA}" \
-      --assistant-url="${assistant_url}" --dataset="${BIGQUERY_DATASET}" \
+      "${assistant_smoke_arg[@]}" --dataset="${BIGQUERY_DATASET}" \
       --connection="${BIGQUERY_CONNECTION_ID}" \
-      --timezone="${DEFAULT_TIMEZONE}"
+      --timezone="${DEFAULT_TIMEZONE}" --auth-mode="${AUTH_MODE}" \
+      --identity-project="${IDENTITY_PLATFORM_PROJECT_ID}" \
+      --bootstrap-subject="${BOOTSTRAP_IDP_SUBJECT}" \
+      --tenant-id="${DEFAULT_TENANT_ID}" \
+      --demo-subject-id="${DEMO_SUBJECT_ID}"
   else
     echo "[SKIP] CRUD smoke checks are unavailable in prototype mode."
   fi
@@ -464,7 +485,11 @@ rollback() {
     --to-revisions="${revision}=100"
 }
 
-preflight
+if [[ "${ACTION}" == "suspend" || "${ACTION}" == "cost-status" ]]; then
+  preflight_project_access
+else
+  preflight
+fi
 case "${ACTION}" in
   preflight) ;;
   provision) "${SCRIPT_DIR}/provision.sh" ;;
@@ -488,7 +513,7 @@ case "${ACTION}" in
     ;;
   verify) setup_analytics; verify_candidate ;;
   promote) promote ;;
-  rollback) rollback "$@" ;;
+  rollback) rollback "${2:-}" ;;
   full)
     "${SCRIPT_DIR}/provision.sh"
     build_images

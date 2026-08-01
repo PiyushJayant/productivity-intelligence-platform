@@ -20,6 +20,10 @@ from google.oauth2 import id_token
 from toolbox_core import ToolboxSyncClient
 
 from productivity_intelligence.config import settings
+from productivity_intelligence.identity import (
+    current_subject_id,
+    current_tenant_id,
+)
 
 LOGGER = logging.getLogger(__name__)
 BIGQUERY_READ_ONLY_TOOLS = [
@@ -123,7 +127,17 @@ def load_toolset(toolset_name: str):
         if _toolbox_headers is not None:
             client_headers = {"Authorization": _toolbox_headers.authorization}
         toolbox = ToolboxSyncClient(settings.toolbox_url, client_headers=client_headers)
-        tools = toolbox.load_toolset(toolset_name)
+        # Bound parameters are evaluated at invocation time and removed from the
+        # model-visible tool schema by Toolbox. The LLM cannot select or alter
+        # tenant and subject identifiers.
+        tools = toolbox.load_toolset(
+            toolset_name,
+            bound_params={
+                "tenant_id": current_tenant_id,
+                "subject_id": current_subject_id,
+            },
+            strict=True,
+        )
         # Toolbox tools use their client's background event loop and HTTP session
         # at invocation time. Keep the owning client alive for the process lifetime.
         with _toolbox_clients_lock:

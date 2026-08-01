@@ -1,5 +1,9 @@
 # Productivity Intelligence Platform
 
+> Cloud resources are suspended by default. Development phases 0–4 and the
+> separately billing-gated Phase 5 workflow are documented in
+> [docs/IMPLEMENTATION_PHASES.md](docs/IMPLEMENTATION_PHASES.md).
+
 A configurable Google ADK work-orchestration platform for synthetic tasks, semantic
 notes, calendar events, and live productivity analytics on Google Cloud.
 
@@ -107,23 +111,34 @@ not normally reachable from an ordinary workstation.
 
 ## Deployment
 
+Phase 5 deployment requires Google Cloud Identity Platform. Create the first user and put
+that user's Identity Platform UID in `BOOTSTRAP_IDP_SUBJECT` before
+provisioning. Production must use `AUTH_MODE=identity_platform`;
+`AUTH_MODE=disabled` is restricted to local/demo development and is rejected
+for `ENVIRONMENT=production`.
+
+Clients send `Authorization: Bearer <Identity Platform ID token>`. The assistant
+verifies the token before application routes run. `/healthz` and `/readyz`
+remain public and do not expose identity or credential details.
+
 Run phases independently:
 
 ```bash
-./setup/deploy.sh preflight
-./setup/deploy.sh provision
-./setup/deploy.sh build
-./setup/deploy.sh migrate
-./setup/deploy.sh deploy
-./setup/deploy.sh verify
-./setup/deploy.sh promote
+./setup/phase5.sh plan
+./setup/phase5.sh identity
+./setup/phase5.sh provision
+./setup/phase5.sh build
+./setup/phase5.sh migrate
+./setup/phase5.sh deploy
+./setup/phase5.sh verify
+./setup/phase5.sh promote
 ./setup/deploy.sh cost-status
 ```
 
 Or run the complete workflow:
 
 ```bash
-./setup/deploy.sh full
+./setup/phase5.sh full
 ```
 
 Set `SEED_DEMO=true` in `.env` for idempotent shared synthetic records. Shell
@@ -138,7 +153,8 @@ The full workflow:
 5. Applies image cleanup policies and builds only missing full-Git-SHA images.
 6. Runs the schema migration and embedding smoke test through a Cloud Run Job.
 7. Deploys IAM-protected Toolbox with Direct VPC egress.
-8. Creates the encrypted AlloyDB federation connection and live BigQuery views.
+8. Creates the encrypted AlloyDB federation connection, rollback-compatible
+   views, and the bounded `get_productivity_trends_v2` procedure.
 9. Deploys an assistant candidate with no production traffic.
 10. Optionally deploys IAM-protected lifecycle jobs and Cloud Scheduler triggers.
 11. Verifies IAM, liveness, mode-specific readiness, and a synthetic end-to-end
@@ -148,7 +164,7 @@ The full workflow:
 Rollback requires an explicit prior revision:
 
 ```bash
-./setup/deploy.sh rollback productivity-intelligence-00001-abc
+./setup/phase5.sh rollback productivity-intelligence-00001-abc
 ```
 
 ## Suspend and resume
@@ -171,8 +187,8 @@ Resume restores the configured scaling, public invocation, schedulers, monitorin
 and AlloyDB before testing or judging:
 
 ```bash
-./setup/deploy.sh resume
-./setup/deploy.sh verify
+./setup/phase5.sh deploy
+./setup/phase5.sh verify
 ```
 
 `AUTO_SUSPEND_AFTER_DEPLOY=true` verifies and promotes a full deployment before
@@ -191,7 +207,7 @@ LIFECYCLE_TIMEZONE=Asia/Kolkata
 Apply or remove those jobs idempotently with:
 
 ```bash
-./setup/deploy.sh lifecycle
+./setup/phase5.sh deploy
 ```
 
 The scheduler invokes private Cloud Run Jobs using OAuth. Those jobs can only
@@ -268,13 +284,22 @@ synthetic-test markers, and timestamps—never titles, descriptions, tags, or no
 content. This preserves aggregate analytics after operational records are deleted.
 Synthetic deployment checks are excluded from user analytics.
 
-BigQuery dataset and connection names come from `.env`. The `task_summary` and
-`daily_activity` views aggregate inside AlloyDB before returning small result sets
-through `EXTERNAL_QUERY` over the activity ledger. Day boundaries use
-`DEFAULT_TIMEZONE`. The model cannot
-author SQL: the analytics agent exposes one domain tool that runs a fixed,
-parameterized query over the approved views and calculates period completion
-rates from summed completed and total tasks rather than averaging percentages.
+BigQuery dataset, connection, and procedure names come from `.env`. Unscoped
+`task_summary` and `daily_activity` views are removed during setup. Runtime
+analytics calls the versioned, tenant-scoped `get_productivity_trends_v2`
+procedure. It validates the requested range, embeds canonical date and
+server-injected tenant boundaries in the PostgreSQL statement, filters the
+activity ledger before aggregation, and returns only bounded results through
+`EXTERNAL_QUERY`. Day boundaries use
+`DEFAULT_TIMEZONE`; `ANALYTICS_MAX_RANGE_DAYS` and
+`ANALYTICS_QUERY_TIMEOUT_SECONDS` provide application guardrails.
+
+The model cannot author SQL: the analytics agent exposes one domain tool with
+typed date and grain parameters. Tenant and subject IDs come only from verified
+request context. Toolbox bound parameters remove both fields from model-visible
+tool schemas, and every SQL operation checks active membership. A dedicated
+AlloyDB read pool and native BigQuery CDC remain scale-triggered production
+upgrades rather than default demo costs. See the architecture ADRs in `docs`.
 
 ## Security and operations
 

@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
 
@@ -14,6 +15,8 @@ AGENTS_DIR = os.environ.get(
 if AGENTS_DIR not in sys.path:
     sys.path.insert(0, AGENTS_DIR)
 
+from productivity_intelligence.config import settings  # noqa: E402
+from productivity_intelligence.identity import identity_middleware  # noqa: E402
 from productivity_intelligence.observability import (  # noqa: E402
     configure_logging,
     request_observability_middleware,
@@ -32,9 +35,29 @@ logger.info("Starting Productivity Intelligence Platform...")
 
 app = get_fast_api_app(
     agents_dir=AGENTS_DIR,
-    web=True,
+    web=settings.auth_mode == "disabled",
 )
+# Debug, evaluation, builder, and live-development transports are not production
+# application APIs. Remove them entirely when end-user authentication is active.
+if settings.auth_mode == "identity_platform":
+    blocked_fragments = (
+        "/debug/",
+        "/dev/",
+        "/builder/",
+        "/eval",
+        "/metrics-info",
+        "/run_live",
+    )
+    app.router.routes = [
+        route
+        for route in app.router.routes
+        if not any(
+            fragment in getattr(route, "path", "")
+            for fragment in blocked_fragments
+        )
+    ]
 app.middleware("http")(request_observability_middleware)
+app.middleware("http")(identity_middleware)
 logger.info("ADK FastAPI app created successfully")
 
 
@@ -47,6 +70,16 @@ def healthz():
 def readyz():
     snapshot = capabilities.snapshot()
     return JSONResponse(snapshot, status_code=200 if snapshot["ready"] else 503)
+
+
+@app.get("/auth/me", include_in_schema=False)
+def auth_me(request: Request):
+    identity = request.state.identity
+    return {
+        "tenant_id": str(identity.tenant_id),
+        "subject_id": str(identity.subject_id),
+        "role": identity.role,
+    }
 
 if __name__ == "__main__":
     import uvicorn

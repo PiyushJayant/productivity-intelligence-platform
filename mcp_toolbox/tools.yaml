@@ -39,16 +39,25 @@ tools:
       - name: due_at
         type: string
         description: "Resolved UTC RFC 3339 deadline, or an empty string when no time was requested"
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       WITH created AS (
-        INSERT INTO tasks (title, description, priority, due_date, due_at)
+        INSERT INTO tasks (
+          title, description, priority, due_date, due_at, tenant_id,
+          created_by_subject_id
+        )
         VALUES (
           $1, $2, $3,
           COALESCE(
             NULLIF($4, '')::date,
             (NULLIF($5, '')::timestamptz AT TIME ZONE '${DEFAULT_TIMEZONE}')::date
           ),
-          NULLIF($5, '')::timestamptz
+          NULLIF($5, '')::timestamptz, $6::uuid, $7::uuid
         )
         RETURNING id, title, priority, status, due_date, due_at
       )
@@ -71,6 +80,12 @@ tools:
       - name: status
         type: string
         description: "Filter by task status: pending, in_progress, done, or all"
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       SELECT id, title, description, priority, status,
         due_date::text AS due_date,
@@ -80,7 +95,14 @@ tools:
         '${DEFAULT_TIMEZONE}' AS due_timezone,
         created_at
       FROM tasks
-      WHERE $1 = 'all' OR status = $1
+      WHERE tenant_id = $2::uuid
+        AND ($1 = 'all' OR status = $1)
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+        )
       ORDER BY created_at DESC
       LIMIT ${DEFAULT_PAGE_SIZE};
 
@@ -97,10 +119,23 @@ tools:
       - name: status
         type: string
         description: "New status value: pending, in_progress, or done"
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       UPDATE tasks
       SET status = $2
-      WHERE id = $1
+      WHERE id = $1 AND tenant_id = $3::uuid
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $3::uuid AND m.subject_id = $4::uuid
+            AND t.status = 'active'
+            AND m.role IN ('owner', 'admin', 'member')
+        )
       RETURNING id, title, status;
 
   update_tasks_status:
@@ -117,6 +152,12 @@ tools:
       - name: status
         type: string
         description: "New status value: pending, in_progress, or done"
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       UPDATE tasks
       SET status = $2
@@ -124,7 +165,14 @@ tools:
         SELECT DISTINCT trim(value)::bigint AS id
         FROM unnest(string_to_array($1, ',')) AS selected(value)
       ) AS requested
-      WHERE tasks.id = requested.id
+      WHERE tasks.id = requested.id AND tasks.tenant_id = $3::uuid
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $3::uuid AND m.subject_id = $4::uuid
+            AND t.status = 'active'
+            AND m.role IN ('owner', 'admin', 'member')
+        )
       RETURNING tasks.id, tasks.title, tasks.status;
 
   delete_task:
@@ -137,9 +185,22 @@ tools:
       - name: task_id
         type: integer
         description: ID of the task to delete
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       DELETE FROM tasks
-      WHERE id = $1
+      WHERE id = $1 AND tenant_id = $2::uuid
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+            AND m.role IN ('owner', 'admin', 'member')
+        )
       RETURNING id, title;
 
   delete_tasks:
@@ -153,13 +214,26 @@ tools:
       - name: task_ids
         type: string
         description: "Comma-separated confirmed task IDs, for example: 2,5"
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       DELETE FROM tasks
       USING (
         SELECT DISTINCT trim(value)::bigint AS id
         FROM unnest(string_to_array($1, ',')) AS selected(value)
       ) AS requested
-      WHERE tasks.id = requested.id
+      WHERE tasks.id = requested.id AND tasks.tenant_id = $2::uuid
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+            AND m.role IN ('owner', 'admin', 'member')
+        )
       RETURNING tasks.id, tasks.title;
 
   # ── Notes Tools ───────────────────────────────────────────────────────────────
@@ -181,11 +255,20 @@ tools:
       - name: tags
         type: string
         description: Comma-separated tags, or empty string if none
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
-      INSERT INTO notes (title, content, tags, embedding)
+      INSERT INTO notes (
+        title, content, tags, embedding, tenant_id, created_by_subject_id
+      )
       VALUES (
         $1, $2, $3,
-        google_ml.embedding('${EMBEDDING_MODEL}', $1 || ' ' || $2)::vector
+        google_ml.embedding('${EMBEDDING_MODEL}', $1 || ' ' || $2)::vector,
+        $4::uuid, $5::uuid
       )
       RETURNING id, title, LEFT(content, 180) AS content_preview,
         CASE WHEN tags = '' THEN 'No tags' ELSE tags END AS tags;
@@ -201,13 +284,25 @@ tools:
       - name: query
         type: string
         description: Natural language search query
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       WITH ranked AS (
         SELECT id, title, content, tags, created_at,
           1 - (embedding <=> google_ml.embedding('${EMBEDDING_MODEL}', $1)::vector)
             AS relevance_score
         FROM notes
-        WHERE embedding IS NOT NULL
+        WHERE embedding IS NOT NULL AND tenant_id = $2::uuid
+          AND EXISTS (
+            SELECT 1 FROM tenant_memberships m
+            JOIN tenants t ON t.id = m.tenant_id
+            WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+              AND t.status = 'active'
+          )
       )
       SELECT id, title, content, tags, created_at,
         ROUND(relevance_score::numeric, 3) AS relevance_score
@@ -226,10 +321,23 @@ tools:
       - name: tag
         type: string
         description: Tag to filter by, or empty string for all notes
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       SELECT id, title, content, tags, created_at
       FROM notes
-      WHERE $1 = '' OR tags ILIKE '%' || $1 || '%'
+      WHERE tenant_id = $2::uuid
+        AND ($1 = '' OR tags ILIKE '%' || $1 || '%')
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+        )
       ORDER BY created_at DESC
       LIMIT ${DEFAULT_PAGE_SIZE};
 
@@ -243,9 +351,22 @@ tools:
       - name: note_id
         type: integer
         description: ID of the note to delete
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       DELETE FROM notes
-      WHERE id = $1
+      WHERE id = $1 AND tenant_id = $2::uuid
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+            AND m.role IN ('owner', 'admin', 'member')
+        )
       RETURNING id, title;
 
   delete_notes:
@@ -259,13 +380,26 @@ tools:
       - name: note_ids
         type: string
         description: "Comma-separated confirmed note IDs, for example: 2,5"
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       DELETE FROM notes
       USING (
         SELECT DISTINCT trim(value)::bigint AS id
         FROM unnest(string_to_array($1, ',')) AS selected(value)
       ) AS requested
-      WHERE notes.id = requested.id
+      WHERE notes.id = requested.id AND notes.tenant_id = $2::uuid
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+            AND m.role IN ('owner', 'admin', 'member')
+        )
       RETURNING notes.id, notes.title;
 
   # ── Calendar Tools ────────────────────────────────────────────────────────────
@@ -292,10 +426,19 @@ tools:
       - name: description
         type: string
         description: Optional description or agenda for the event
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       WITH created AS (
-        INSERT INTO events (title, date, time, duration_minutes, description)
-        VALUES ($1, $2::date, $3::time, $4, $5)
+        INSERT INTO events (
+          title, date, time, duration_minutes, description, tenant_id,
+          created_by_subject_id
+        )
+        VALUES ($1, $2::date, $3::time, $4, $5, $6::uuid, $7::uuid)
         RETURNING id, title, date, time, duration_minutes
       )
       SELECT id, title, date::text AS date,
@@ -313,12 +456,25 @@ tools:
       - name: date
         type: string
         description: Date to filter by in YYYY-MM-DD format, or empty string for all events
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       SELECT id, title, date::text AS date,
         to_char(time, 'HH24:MI') AS time,
         duration_minutes, description, created_at
       FROM events
-      WHERE NULLIF($1, '') IS NULL OR date = NULLIF($1, '')::date
+      WHERE tenant_id = $2::uuid
+        AND (NULLIF($1, '') IS NULL OR date = NULLIF($1, '')::date)
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+        )
       ORDER BY date ASC, time ASC
       LIMIT ${DEFAULT_PAGE_SIZE};
 
@@ -332,9 +488,22 @@ tools:
       - name: event_id
         type: integer
         description: ID of the event to delete
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       DELETE FROM events
-      WHERE id = $1
+      WHERE id = $1 AND tenant_id = $2::uuid
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+            AND m.role IN ('owner', 'admin', 'member')
+        )
       RETURNING id, title;
 
   delete_events:
@@ -348,13 +517,26 @@ tools:
       - name: event_ids
         type: string
         description: "Comma-separated confirmed event IDs, for example: 2,4"
+      - name: tenant_id
+        type: string
+        description: Server-bound tenant UUID
+      - name: subject_id
+        type: string
+        description: Server-bound subject UUID
     statement: >
       DELETE FROM events
       USING (
         SELECT DISTINCT trim(value)::bigint AS id
         FROM unnest(string_to_array($1, ',')) AS selected(value)
       ) AS requested
-      WHERE events.id = requested.id
+      WHERE events.id = requested.id AND events.tenant_id = $2::uuid
+        AND EXISTS (
+          SELECT 1 FROM tenant_memberships m
+          JOIN tenants t ON t.id = m.tenant_id
+          WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
+            AND t.status = 'active'
+            AND m.role IN ('owner', 'admin', 'member')
+        )
       RETURNING events.id, events.title;
 
 toolsets:

@@ -14,6 +14,13 @@ def reload_config(monkeypatch, **values):
         "DEFAULT_TIMEZONE",
         "LOG_LEVEL",
         "REQUEST_ID_HEADER",
+        "BIGQUERY_ANALYTICS_PROCEDURE",
+        "ANALYTICS_MAX_RANGE_DAYS",
+        "ANALYTICS_QUERY_TIMEOUT_SECONDS",
+        "AUTH_MODE",
+        "IDENTITY_PLATFORM_PROJECT_ID",
+        "DEFAULT_TENANT_ID",
+        "DEMO_SUBJECT_ID",
     ):
         monkeypatch.delenv(name, raising=False)
     values = {
@@ -22,6 +29,13 @@ def reload_config(monkeypatch, **values):
         "DEFAULT_TIMEZONE": "Asia/Kolkata",
         "LOG_LEVEL": "INFO",
         "REQUEST_ID_HEADER": "X-Request-ID",
+        "BIGQUERY_ANALYTICS_PROCEDURE": "get_productivity_trends_v2",
+        "ANALYTICS_MAX_RANGE_DAYS": "730",
+        "ANALYTICS_QUERY_TIMEOUT_SECONDS": "30",
+        "AUTH_MODE": "disabled",
+        "IDENTITY_PLATFORM_PROJECT_ID": "test-project",
+        "DEFAULT_TENANT_ID": "11111111-1111-4111-8111-111111111111",
+        "DEMO_SUBJECT_ID": "22222222-2222-4222-8222-222222222222",
         **values,
     }
     for name, value in values.items():
@@ -66,6 +80,18 @@ def test_context_window_must_be_positive(monkeypatch):
         reload_config(monkeypatch, AGENT_CONTEXT_MAX_EVENTS="0")
 
 
+def test_analytics_limits_and_routine_name_are_validated(monkeypatch):
+    with pytest.raises(ValueError, match="ANALYTICS_MAX_RANGE_DAYS"):
+        reload_config(monkeypatch, ANALYTICS_MAX_RANGE_DAYS="0")
+    with pytest.raises(ValueError, match="ANALYTICS_QUERY_TIMEOUT_SECONDS"):
+        reload_config(monkeypatch, ANALYTICS_QUERY_TIMEOUT_SECONDS="0")
+    with pytest.raises(ValueError, match="BIGQUERY_ANALYTICS_PROCEDURE"):
+        reload_config(
+            monkeypatch,
+            BIGQUERY_ANALYTICS_PROCEDURE="unsafe-procedure;drop",
+        )
+
+
 def test_invalid_timezone_and_observability_values_are_rejected(monkeypatch):
     with pytest.raises(ValueError, match="DEFAULT_TIMEZONE"):
         reload_config(monkeypatch, DEFAULT_TIMEZONE="not-a-timezone")
@@ -73,3 +99,16 @@ def test_invalid_timezone_and_observability_values_are_rejected(monkeypatch):
         reload_config(monkeypatch, LOG_LEVEL="verbose")
     with pytest.raises(ValueError, match="REQUEST_ID_HEADER"):
         reload_config(monkeypatch, REQUEST_ID_HEADER="bad header")
+
+
+def test_identity_configuration_fails_closed(monkeypatch):
+    with pytest.raises(ValueError, match="AUTH_MODE"):
+        reload_config(monkeypatch, AUTH_MODE="optional")
+    with pytest.raises(ValueError, match="IDENTITY_PLATFORM_PROJECT_ID"):
+        reload_config(
+            monkeypatch,
+            AUTH_MODE="identity_platform",
+            IDENTITY_PLATFORM_PROJECT_ID="",
+        )
+    with pytest.raises(ValueError, match="DEFAULT_TENANT_ID"):
+        reload_config(monkeypatch, DEFAULT_TENANT_ID="not-a-uuid")

@@ -12,7 +12,8 @@ def test_initializer_creates_one_complete_env_with_unique_secrets(tmp_path: Path
         "GOOGLE_CLOUD_PROJECT=your-project-id\n"
         "ADMIN_DB_PASSWORD=change-me-admin-at-least-24-characters\n"
         "APP_DB_PASSWORD=change-me-application-at-least-24-characters\n"
-        "ANALYTICS_DB_PASSWORD=change-me-analytics-at-least-24-characters\n",
+        "ANALYTICS_DB_PASSWORD=change-me-analytics-at-least-24-characters\n"
+        "PSEUDONYMIZATION_KEY=change-me-pseudonymization-at-least-32-characters\n",
         encoding="utf-8",
     )
 
@@ -25,5 +26,5 @@ def test_initializer_creates_one_complete_env_with_unique_secrets(tmp_path: Path
 
     assert values["GOOGLE_CLOUD_PROJECT"] == "cost-test-project"
     secrets = [values[key] for key in SECRET_KEYS]
-    assert len(set(secrets)) == 3
+    assert len(set(secrets)) == len(SECRET_KEYS)
     assert all(len(value) >= 24 and "change-me" not in value for value in secrets)

@@ -24,12 +24,13 @@ upgrade review.
 ## Local configuration secret boundary
 
 The git-ignored `.env` is intentionally the single deployment source of truth and
-contains database password values. Treat it as a secret:
+contains database password and pseudonymization-key values. Treat it as a secret:
 
 - Create it with `python setup/init_env.py --project PROJECT_ID`.
 - Never commit, upload, print, attach, or paste it into logs or support requests.
 - Store workstation backups only in an approved encrypted secret store.
-- Use independent values for administrator, application, and analytics users.
+- Use independent values for administrator, application, and analytics users,
+  plus an independently generated pseudonymization key.
 - Rotate a password by editing only `.env` and rerunning provisioning and migration;
   provisioning adds a Secret Manager version and Cloud Run pins the resolved number.
 - Delete `.env` securely when the local deployment authority is retired.
@@ -41,10 +42,11 @@ and migration revisions refer to Secret Manager numeric versions.
 
 Hard deletion removes task titles and descriptions, note titles/content/tags,
 and calendar event details from operational tables. A separate append-only
-analytics ledger intentionally retains only entity type, numeric entity ID,
-event type, priority, a synthetic-test marker, and timestamp. It contains no
-free-form user content and preserves aggregate productivity history after record
-deletion.
+analytics ledger intentionally excludes free-form user content. It retains
+tenant/subject identifiers until the privacy worker applies an HMAC subject
+token and the configured retention workflow rolls old rows into anonymous daily
+aggregates. The native BigQuery path must not be activated until write-time
+pseudonymization and CDC schema validation are complete.
 
 Treat ledger identifiers and timestamps as pseudonymous operational metadata.
 Deleting the AlloyDB cluster through the complete cleanup workflow removes both

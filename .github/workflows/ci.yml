@@ -22,6 +22,9 @@ jobs:
           mypy main.py productivity_intelligence
           setup/bigquery_setup.py setup/migrate.py setup/init_env.py
           setup/lifecycle.py setup/evaluate_contracts.py setup/smoke_test.py
+          setup/migration_runner.py setup/privacy_job.py
+          setup/native_bigquery_setup.py setup/evaluate_cdc_trigger.py
+          setup/identity_setup.py setup/load_test.py
       - run: pytest
       - name: Validate deterministic agent evaluation manifest
         run: python setup/evaluate_contracts.py

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# This file is sourced by deployment scripts; exported helpers and derived
+# identity variables are intentionally consumed by those callers.
+# shellcheck disable=SC2034
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +37,9 @@ REQUIRED_CONFIG=(
   GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_LOCATION REGION GOOGLE_GENAI_USE_VERTEXAI
   MODEL EMBEDDING_MODEL EMBEDDING_DIMENSIONS APP_MODE COST_PROFILE
   ENVIRONMENT RESOURCE_LABELS BIGQUERY_MCP_URL
+  AUTH_MODE IDENTITY_PLATFORM_PROJECT_ID IDENTITY_TENANT_CLAIM
+  IDENTITY_ROLE_CLAIM DEFAULT_TENANT_ID DEMO_SUBJECT_ID
+  AUTH_CLOCK_SKEW_SECONDS BOOTSTRAP_IDP_SUBJECT
   ASSISTANT_SERVICE_NAME TOOLBOX_SERVICE_NAME MIGRATION_JOB_NAME
   LIFECYCLE_JOB_NAME AR_REPO
   VPC_NETWORK VPC_SUBNET VPC_SUBNET_RANGE PSA_RANGE_NAME
@@ -42,9 +48,13 @@ REQUIRED_CONFIG=(
   ANALYTICS_DB_USER ALLOYDB_IP_TYPE ALLOYDB_ACTIVATION_POLICY
   ALLOYDB_ESTIMATED_HOURLY_USD
   TOOLBOX_URL TOOLBOX_AUDIENCE BIGQUERY_DATASET BIGQUERY_CONNECTION_ID
+  BIGQUERY_ANALYTICS_PROCEDURE ANALYTICS_BACKEND BIGQUERY_NATIVE_TVF
+  ANALYTICS_RETRY_ATTEMPTS ANALYTICS_RETRY_BASE_SECONDS
+  ANALYTICS_RETRY_MAX_SECONDS PSEUDONYMIZATION_KEY PRIVACY_RETENTION_DAYS
+  TAXONOMY_VERSION
   ASSISTANT_SA_NAME TOOLBOX_SA_NAME MIGRATION_SA_NAME LIFECYCLE_SA_NAME
   SCHEDULER_SA_NAME LIFECYCLE_ROLE_ID
-  ADMIN_DB_SECRET APP_DB_SECRET ANALYTICS_DB_SECRET
+  ADMIN_DB_SECRET APP_DB_SECRET ANALYTICS_DB_SECRET PSEUDONYMIZATION_SECRET
   ADMIN_DB_PASSWORD APP_DB_PASSWORD ANALYTICS_DB_PASSWORD
   ASSISTANT_MIN_INSTANCES ASSISTANT_MAX_INSTANCES ASSISTANT_CPU
   ASSISTANT_MEMORY ASSISTANT_CONCURRENCY ASSISTANT_TIMEOUT
@@ -54,6 +64,7 @@ REQUIRED_CONFIG=(
   ROUTER_MAX_OUTPUT_TOKENS ROUTER_THINKING_BUDGET
   SPECIALIST_MAX_OUTPUT_TOKENS SPECIALIST_THINKING_BUDGET
   ANALYTICS_MAX_OUTPUT_TOKENS ANALYTICS_THINKING_BUDGET
+  ANALYTICS_MAX_RANGE_DAYS ANALYTICS_QUERY_TIMEOUT_SECONDS
   AGENT_CONTEXT_MAX_EVENTS MODEL_TEMPERATURE
   DEFAULT_TIMEZONE DEFAULT_PAGE_SIZE LOG_LEVEL STRUCTURED_LOGGING
   ENABLE_REQUEST_LOGGING REQUEST_ID_HEADER
@@ -66,6 +77,13 @@ REQUIRED_CONFIG=(
   AUTO_SUSPEND_AFTER_DEPLOY ALLOYDB_STATE_TIMEOUT_SECONDS
   ENABLE_SCHEDULED_LIFECYCLE LIFECYCLE_RESUME_CRON LIFECYCLE_SUSPEND_CRON
   LIFECYCLE_TIMEZONE
+  ENABLE_ALLOYDB_READ_POOL ALLOYDB_READ_POOL ALLOYDB_READ_POOL_NODE_COUNT
+  ALLOYDB_READ_POOL_MACHINE_TYPE ANALYTICS_ALLOYDB_INSTANCE
+  ENABLE_CMEK KMS_KEYRING KMS_ALLOYDB_KEY KMS_BIGQUERY_KEY KMS_SECRET_KEY
+  KMS_ROTATION_PERIOD ENABLE_VPC_SC SERVICE_PERIMETER_NAME
+  ENABLE_DATASTREAM DATASTREAM_LOCATION DATASTREAM_STREAM
+  DATASTREAM_SOURCE_PROFILE DATASTREAM_DESTINATION_PROFILE
+  BIGQUERY_NATIVE_TABLE ENABLE_BILLABLE_PHASE BILLING_ACK
 )
 
 for config_name in "${REQUIRED_CONFIG[@]}"; do
@@ -88,6 +106,16 @@ require_command() {
     echo "Error: required command '$1' was not found." >&2
     exit 1
   }
+}
+
+require_phase5() {
+  if [[ "${PHASE5_ACTIVE:-false}" != "true" ||
+        "${ENABLE_BILLABLE_PHASE:-false}" != "true" ||
+        "${BILLING_ACK:-}" != "I_ACKNOWLEDGE_GCP_CHARGES" ]]; then
+    echo "Error: this command may activate billable GCP resources." >&2
+    echo "Run it only through setup/phase5.sh after explicit billing approval." >&2
+    exit 1
+  fi
 }
 
 require_boolean() {
@@ -115,6 +143,38 @@ validate_config() {
     echo "Error: APP_MODE must be full or prototype." >&2
     exit 1
   }
+  [[ "${ANALYTICS_BACKEND}" == "federated" ||
+      "${ANALYTICS_BACKEND}" == "native" ]] || {
+    echo "Error: ANALYTICS_BACKEND must be federated or native." >&2
+    exit 1
+  }
+  if [[ "${ANALYTICS_BACKEND}" == "native" &&
+        "${ENABLE_DATASTREAM}" != "true" ]]; then
+    echo "Error: native analytics requires ENABLE_DATASTREAM=true." >&2
+    exit 1
+  fi
+  [[ "${AUTH_MODE}" == "identity_platform" || "${AUTH_MODE}" == "disabled" ]] || {
+    echo "Error: AUTH_MODE must be identity_platform or disabled." >&2
+    return 1
+  }
+  if [[ "${ENVIRONMENT}" == "production" && "${AUTH_MODE}" != "identity_platform" ]]; then
+    echo "Error: production requires AUTH_MODE=identity_platform." >&2
+    return 1
+  fi
+  local uuid_pattern='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+  [[ "${DEFAULT_TENANT_ID}" =~ ${uuid_pattern} ]] || {
+    echo "Error: DEFAULT_TENANT_ID must be a canonical UUID." >&2
+    return 1
+  }
+  [[ "${DEMO_SUBJECT_ID}" =~ ${uuid_pattern} ]] || {
+    echo "Error: DEMO_SUBJECT_ID must be a canonical UUID." >&2
+    return 1
+  }
+  if [[ "${AUTH_MODE}" == "identity_platform" &&
+        "${BOOTSTRAP_IDP_SUBJECT}" == replace-* ]]; then
+    echo "Error: BOOTSTRAP_IDP_SUBJECT is still a placeholder." >&2
+    return 1
+  fi
   [[ "${COST_PROFILE}" == "demo" || "${COST_PROFILE}" == "lean" ||
       "${COST_PROFILE}" == "production" ]] || {
     echo "Error: COST_PROFILE must be demo, lean, or production." >&2
@@ -167,7 +227,9 @@ validate_config() {
   for boolean_name in GOOGLE_GENAI_USE_VERTEXAI SEED_DEMO SKIP_EXISTING_IMAGES \
       ENABLE_MONITORING ENABLE_UPTIME_CHECK ENABLE_LOG_METRICS ALLOW_ALLOYDB_RESIZE \
       EXCLUDE_HEALTH_CHECK_LOGS AUTO_SUSPEND_AFTER_DEPLOY STRUCTURED_LOGGING \
-      ENABLE_REQUEST_LOGGING ENABLE_SCHEDULED_LIFECYCLE; do
+      ENABLE_REQUEST_LOGGING ENABLE_SCHEDULED_LIFECYCLE \
+      ENABLE_ALLOYDB_READ_POOL ENABLE_CMEK ENABLE_VPC_SC ENABLE_DATASTREAM \
+      ENABLE_BILLABLE_PHASE; do
     require_boolean "${boolean_name}"
   done
 
@@ -178,6 +240,7 @@ validate_config() {
       TOOLBOX_CONCURRENCY TOOLBOX_TIMEOUT MIGRATION_CPU MIGRATION_TIMEOUT \
       ROUTER_MAX_OUTPUT_TOKENS SPECIALIST_MAX_OUTPUT_TOKENS \
       ANALYTICS_MAX_OUTPUT_TOKENS ARTIFACT_KEEP_COUNT \
+      ANALYTICS_MAX_RANGE_DAYS ANALYTICS_QUERY_TIMEOUT_SECONDS \
       ARTIFACT_RETENTION_DAYS ALLOYDB_STATE_TIMEOUT_SECONDS EMBEDDING_DIMENSIONS \
       MONITORING_ALIGNMENT_SECONDS MONITORING_5XX_RATE_THRESHOLD \
       MONITORING_P95_LATENCY_MS MONITORING_ALLOYDB_CONNECTION_THRESHOLD \
@@ -191,6 +254,7 @@ validate_config() {
       TOOLBOX_CONCURRENCY TOOLBOX_TIMEOUT MIGRATION_CPU MIGRATION_TIMEOUT \
       ROUTER_MAX_OUTPUT_TOKENS SPECIALIST_MAX_OUTPUT_TOKENS \
       ANALYTICS_MAX_OUTPUT_TOKENS ARTIFACT_KEEP_COUNT ARTIFACT_RETENTION_DAYS \
+      ANALYTICS_MAX_RANGE_DAYS ANALYTICS_QUERY_TIMEOUT_SECONDS \
       ALLOYDB_STATE_TIMEOUT_SECONDS EMBEDDING_DIMENSIONS \
       MONITORING_ALIGNMENT_SECONDS MONITORING_P95_LATENCY_MS \
       MONITORING_ALLOYDB_CONNECTION_THRESHOLD UPTIME_CHECK_PERIOD \
@@ -229,8 +293,9 @@ validate_config() {
   }
   [[ "${#BIGQUERY_DATASET}" -le 1024 &&
       "${BIGQUERY_DATASET}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ &&
-      "${BIGQUERY_CONNECTION_ID}" =~ ^[A-Za-z0-9_]+$ ]] || {
-    echo "Error: BigQuery dataset or connection identifier is invalid." >&2
+      "${BIGQUERY_CONNECTION_ID}" =~ ^[A-Za-z0-9_]+$ &&
+      "${BIGQUERY_ANALYTICS_PROCEDURE}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
+    echo "Error: BigQuery dataset, connection, or procedure identifier is invalid." >&2
     exit 1
   }
   [[ "${ADMIN_DB_USER}" != "${ALLOYDB_USER}" &&
@@ -279,8 +344,10 @@ validate_config() {
   }
   [[ "${ADMIN_DB_PASSWORD}" != *"change-me"* &&
       "${APP_DB_PASSWORD}" != *"change-me"* &&
-      "${ANALYTICS_DB_PASSWORD}" != *"change-me"* ]] || {
-    echo "Error: replace all database password placeholders in ${ENV_FILE}." >&2
+      "${ANALYTICS_DB_PASSWORD}" != *"change-me"* &&
+      "${PSEUDONYMIZATION_KEY}" != *"change-me"* &&
+      "${#PSEUDONYMIZATION_KEY}" -ge 32 ]] || {
+    echo "Error: replace all password/key placeholders in ${ENV_FILE}." >&2
     exit 1
   }
   [[ "${ADMIN_DB_PASSWORD}" != "${APP_DB_PASSWORD}" &&
@@ -329,18 +396,18 @@ validate_config() {
 
 preflight() {
   validate_config
-  require_command gcloud
-  require_command "${BQ_BIN}"
-  require_command curl
-
-  gcloud projects describe "${PROJECT_ID}" --format='value(projectId)' >/dev/null
+  preflight_project_access
   local billing
   billing="$(gcloud billing projects describe "${PROJECT_ID}" --format='value(billingEnabled)')"
   [[ "${billing,,}" == "true" ]] || {
     echo "Error: billing is not enabled for ${PROJECT_ID}." >&2
     exit 1
   }
+}
 
+preflight_project_access() {
+  require_command gcloud
+  gcloud projects describe "${PROJECT_ID}" --format='value(projectId)' >/dev/null
   local active_project
   active_project="$(gcloud config get-value project 2>/dev/null || true)"
   [[ "${active_project}" == "${PROJECT_ID}" ]] || {
@@ -348,6 +415,8 @@ preflight() {
     echo "Run: gcloud config set project ${PROJECT_ID}" >&2
     exit 1
   }
+  require_command "${BQ_BIN}"
+  require_command curl
 }
 
 secret_version() {
@@ -359,7 +428,16 @@ secret_version() {
 ensure_secret_from_env() {
   local name="$1" value="$2" current="" version=""
   if ! gcloud secrets describe "${name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    gcloud secrets create "${name}" --replication-policy=automatic --project="${PROJECT_ID}"
+    if [[ "${ENABLE_CMEK}" == "true" ]]; then
+      local kms_key
+      kms_key="projects/${PROJECT_ID}/locations/${REGION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_SECRET_KEY}"
+      gcloud secrets create "${name}" --replication-policy=user-managed \
+        --locations="${REGION}" --kms-key-name="${kms_key}" \
+        --project="${PROJECT_ID}"
+    else
+      gcloud secrets create "${name}" --replication-policy=automatic \
+        --project="${PROJECT_ID}"
+    fi
   fi
   version="$(secret_version "${name}")"
   if [[ -n "${version}" ]]; then

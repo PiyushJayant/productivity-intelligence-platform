@@ -16,6 +16,11 @@ requirements-setup.txt
 cloudbuild.*.yaml
 setup/*
 !setup/migrate.py
+!setup/__init__.py
+!setup/migration_runner.py
+!setup/privacy_job.py
 !setup/lifecycle.py
 !setup/alloydb_schema.sql
+!setup/migrations/
+!setup/migrations/*.sql
 !setup/seed_demo.sql
