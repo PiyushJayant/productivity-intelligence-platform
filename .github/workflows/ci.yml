@@ -25,7 +25,18 @@ jobs:
           setup/migration_runner.py setup/privacy_job.py
           setup/native_bigquery_setup.py setup/evaluate_cdc_trigger.py
           setup/identity_setup.py setup/load_test.py
+          setup/dr_contract.py setup/observability_contract.py
+          setup/observability_inventory.py setup/phase3_validate.py
       - run: pytest
+      - name: Build offline Phase 3 delivery evidence
+        run: python -m setup.phase3_validate --evidence phase3-evidence.json
+      - name: Publish Phase 3 delivery evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-delivery-evidence
+          path: phase3-evidence.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Validate deterministic agent evaluation manifest
         run: python setup/evaluate_contracts.py
       - name: Dependency vulnerability scan

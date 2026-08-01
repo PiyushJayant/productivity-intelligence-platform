@@ -95,6 +95,7 @@ mypy main.py productivity_intelligence setup/bigquery_setup.py setup/migrate.py 
   setup/init_env.py setup/lifecycle.py setup/evaluate_contracts.py setup/smoke_test.py
 pytest
 python setup/evaluate_contracts.py
+python -m setup.phase3_validate
 pip-audit -r requirements.txt
 ```
 
@@ -147,6 +148,25 @@ Run phases independently:
 ./setup/phase5.sh promote
 ./setup/deploy.sh cost-status
 ```
+
+Delivery/resilience plans are safe offline. Their live counterparts remain
+billing-gated and additionally enforce bounded query cost or action-specific DR
+confirmation:
+
+```bash
+./setup/phase5.sh monitoring-plan
+./setup/phase5.sh dr-plan
+# Only during an approved Phase 5 window:
+./setup/phase5.sh load
+./setup/phase5.sh monitoring-validate
+./setup/phase5.sh dr-ha
+./setup/phase5.sh dr-pitr
+./setup/phase5.sh dr-cleanup
+```
+
+Run the load contract once with `LOAD_TEST_FIXTURE_EVENTS=1000000` and again
+with `10000000`. HA and PITR are separate evidence records; PITR always restores
+to the configured `-dr-restore` cluster and never overwrites the source.
 
 Or run the complete workflow:
 

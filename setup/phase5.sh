@@ -48,9 +48,16 @@ Usage: setup/phase5.sh ACTION
   security   provision enabled CMEK and VPC-SC controls
   native     provision native BigQuery v3 contracts (CDC prerequisite)
   cdc        provision the disabled-by-default Datastream CDC resources
+  load       run the bounded authenticated analytics load contract
+  monitoring-plan  validate the monitoring contract without cloud mutation
+  monitoring-validate  compare deployed monitoring inventory to the contract
+  dr-plan    validate the HA/PITR drill contract without cloud mutation
+  dr-ha      execute an approved HA failover drill
+  dr-pitr    execute an approved out-of-place PITR drill
+  dr-cleanup delete the explicitly named PITR restore cluster
   full       identity, provision, build, migrate, deploy and verify
 
-All actions except plan can incur GCP charges and require both:
+All cloud-changing or authenticated actions can incur GCP charges and require both:
   ENABLE_BILLABLE_PHASE=true
   BILLING_ACK=I_ACKNOWLEDGE_GCP_CHARGES
 EOF
@@ -61,7 +68,13 @@ EOF
     echo "[PLAN] project=${PROJECT_ID} region=${REGION} backend=${ANALYTICS_BACKEND}"
     echo "[PLAN] no cloud mutation performed"
     ;;
-  identity|provision|build|migrate|deploy|verify|promote|rollback|security|native|cdc|full)
+  monitoring-plan)
+    "${SCRIPT_DIR}/monitoring.sh" plan
+    ;;
+  dr-plan)
+    "${SCRIPT_DIR}/dr_drill.sh" plan
+    ;;
+  identity|provision|build|migrate|deploy|verify|promote|rollback|security|native|cdc|load|monitoring-validate|dr-ha|dr-pitr|dr-cleanup|full)
     require_command gcloud
     require_phase5_acknowledgement
     case "${ACTION}" in
@@ -79,6 +92,13 @@ EOF
       security) "${SCRIPT_DIR}/security_setup.sh" ;;
       native) "${PYTHON_BIN}" "${SCRIPT_DIR}/native_bigquery_setup.py" ;;
       cdc) "${SCRIPT_DIR}/datastream_setup.sh" ;;
+      load) "${PYTHON_BIN}" "${SCRIPT_DIR}/load_test.py" --execute ;;
+      monitoring-validate)
+        (cd "${REPO_ROOT}" && "${PYTHON_BIN}" -m setup.observability_inventory)
+        ;;
+      dr-ha) "${SCRIPT_DIR}/dr_drill.sh" ha-failover ;;
+      dr-pitr) "${SCRIPT_DIR}/dr_drill.sh" pitr-restore ;;
+      dr-cleanup) "${SCRIPT_DIR}/dr_drill.sh" cleanup-restore ;;
       full)
         "${PYTHON_BIN}" "${SCRIPT_DIR}/identity_setup.py" --apply
         "${SCRIPT_DIR}/deploy.sh" full

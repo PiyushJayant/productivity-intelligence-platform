@@ -7,7 +7,7 @@ on:
         description: Approved Phase 5 action
         required: true
         type: choice
-        options: [identity, provision, build, migrate, deploy, verify, promote, native, full]
+        options: [identity, provision, build, migrate, deploy, verify, promote, native, load, monitoring-plan, monitoring-validate, dr-plan, dr-ha, dr-pitr, dr-cleanup, full]
 
 permissions:
   contents: read
@@ -21,6 +21,7 @@ jobs:
   approved-cloud-change:
     environment: billing-enabled-production
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
       - uses: google-github-actions/auth@v2

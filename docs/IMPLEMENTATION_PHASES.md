@@ -54,11 +54,21 @@ operations that require billing.
 ## Phase 3 — Delivery, resilience, and evidence
 
 - `setup/migration_runner.py` provides ordered checksummed migrations, an
-  advisory lock, immutable-history detection, and idempotent re-entry.
+  advisory lock, immutable-history and database-ahead-of-image detection,
+  per-migration atomic transactions, idempotent re-entry, and a manifest hash.
+- Migration jobs emit versioned JSON evidence containing the before/after
+  migration state without credentials or database contents.
 - Offline CI runs linting, types, unit tests, security scans, YAML checks,
-  ShellCheck, and all container builds.
+  ShellCheck, all container builds, and `python -m setup.phase3_validate`. CI retains
+  the resulting delivery-evidence artifact.
 - Authenticated load and DR tooling live in `setup/load_test.py` and
-  `setup/dr_drill.sh`. They require the Phase 5 gate.
+  `setup/dr_drill.sh`. Load tests enforce bounded concurrency, duration, error,
+  p95, and p99 contracts. DR separates HA failover from out-of-place PITR and
+  refuses source-cluster overwrite. Live actions require the Phase 5 gate.
+- `setup/observability_contract.py` validates health endpoints, alert policies,
+  log metrics, and thresholds offline. Monitoring covers Cloud Run 5xx/latency,
+  AlloyDB connections/read-pool CPU, startup failures, Toolbox authorization,
+  MCP failures, and BigQuery errors.
 - The manual cloud workflow uses an approval-protected GitHub environment and
   Workload Identity Federation, not a downloaded service-account key.
 

@@ -80,3 +80,27 @@ Status: implemented and validated locally; cloud validation remains Phase 5.
   identities.
 - VPC-SC protects supported Google API boundaries; AlloyDB data-plane isolation
   still depends on private IP, service identity, and database privileges.
+
+## Phase 3 delivery resilience and evidence
+
+Status: implemented for offline validation; authenticated cloud measurements
+remain intentionally deferred to Phase 5.
+
+- Database migrations are serialized, checksummed, atomic with their history
+  record, reject unknown future history, and emit a versioned evidence manifest.
+- CI builds a retained Phase 3 artifact covering migration hashes, load SLOs,
+  DR safety boundaries, observability controls, and billable gates.
+- Analytics load tests are bounded to 20 workers and 200 samples, suppress
+  provider error internals, and fail when p95, p99, or error-rate budgets fail.
+- HA failover and PITR are distinct drills. PITR can only create an explicitly
+  suffixed out-of-place cluster; cleanup is separately acknowledged.
+- Monitoring targets `/healthz`, Cloud Run latency/5xx, AlloyDB connections and
+  read-pool CPU, plus startup, authorization, MCP, and BigQuery log metrics.
+
+### Deferred Phase 5 evidence
+
+- Migration rehearsal against AlloyDB extensions, including a second no-op run
+- Load results at approved 1M and 10M ledger-event fixtures
+- Measured HA RTO and application recovery verification
+- Isolated PITR marker verification, measured RTO/RPO, and restore cleanup
+- Exported Cloud Monitoring inventory matched against the offline contract

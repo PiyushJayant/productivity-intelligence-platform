@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import uuid
@@ -9,7 +10,12 @@ from pathlib import Path
 
 from google.cloud.alloydb.connector import Connector, IPTypes
 
-from setup.migration_runner import Migration, apply_migrations, discover_migrations
+from setup.migration_runner import (
+    Migration,
+    apply_migrations,
+    discover_migrations,
+    plan_migrations,
+)
 
 SUBJECT_NAMESPACE = uuid.UUID("2ea7b872-6bc4-4a37-9a58-75fd18d94086")
 
@@ -141,7 +147,19 @@ def main() -> None:
                     migration.checksum,
                 )
             )
+        initial_plan = plan_migrations(cursor, migrations)
         completed = apply_migrations(cursor, migrations)
+        final_plan = plan_migrations(cursor, migrations)
+        if final_plan.pending:
+            raise RuntimeError("migration verification found unapplied versions")
+        evidence = initial_plan.evidence(completed)
+        evidence["verified"] = True
+        evidence["final_applied_versions"] = list(final_plan.applied)
+        rendered_evidence = json.dumps(evidence, sort_keys=True)
+        evidence_path = os.getenv("MIGRATION_EVIDENCE_PATH", "")
+        if evidence_path:
+            Path(evidence_path).write_text(rendered_evidence + "\n", encoding="utf-8")
+        print(rendered_evidence)
         print(f"[OK] Applied migrations: {completed or ['none']}")
         analytics_timeout = quote_literal(f"{analytics_timeout_ms}ms")
         cursor.execute(
