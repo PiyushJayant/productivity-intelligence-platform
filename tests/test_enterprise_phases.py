@@ -15,6 +15,7 @@ def test_migrations_are_ordered_unique_and_checksummed():
     assert [item.version for item in migrations] == [
         "0001_baseline",
         "0002_privacy_taxonomy",
+        "0003_tenant_membership_lifecycle",
     ]
     assert all(len(item.checksum) == 64 for item in migrations)
 
@@ -27,6 +28,19 @@ def test_phase3_migration_contains_privacy_and_taxonomy_contracts():
         "rollup_and_purge_activity",
         "privacy_erasure_requests",
         "erase_subject_data",
+    ):
+        assert contract in sql
+
+
+def test_membership_migration_enforces_revocation_and_owner_invariants():
+    sql = Path("setup/migrations/0003_tenant_membership_lifecycle.sql").read_text()
+    for contract in (
+        "authorize_identity",
+        "m.status = 'active'",
+        "s.disabled_at IS NULL",
+        "the last tenant owner cannot be demoted",
+        "the last tenant owner cannot be revoked",
+        "CREATE OR REPLACE FUNCTION enforce_active_membership",
     ):
         assert contract in sql
 
@@ -45,8 +59,14 @@ def test_cdc_evaluator_keeps_healthy_federation():
 def test_identity_plan_is_offline(monkeypatch):
     monkeypatch.setenv("IDENTITY_PLATFORM_PROJECT_ID", "test-project")
     monkeypatch.setenv("BOOTSTRAP_IDP_SUBJECT", "identity-uid")
+    monkeypatch.setenv("IDENTITY_CONTROLLED_REGISTRATION", "true")
+    monkeypatch.setenv("IDENTITY_BEFORE_CREATE_URL", "")
+    monkeypatch.setenv("IDENTITY_PASSWORD_MIN_LENGTH", "12")
+    monkeypatch.setenv("IDENTITY_PASSWORD_MAX_LENGTH", "128")
     result = configure(apply=False)
-    assert result["public_signup_disabled"] is True
+    assert result["public_signup_disabled"] is False
+    assert result["controlled_registration"] is True
+    assert result["passwordPolicyConfig"]["enforcementState"] == "ENFORCE"
     assert result["bootstrap_subject"] == "identity-uid"
 
 

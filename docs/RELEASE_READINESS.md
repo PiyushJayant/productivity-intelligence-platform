@@ -31,6 +31,23 @@ VPC Service Controls, or Datastream have passed live integration testing.
   phase.
 - Cloud integration results must be added here after an approved Phase 5 run.
 
+## Phase 1 identity and tenant ownership
+
+Status: implemented and validated locally; cloud mutation intentionally deferred
+to Phase 5.
+
+- Protected requests validate Identity Platform JWTs and then authorize against
+  live, active AlloyDB membership; database roles override stale token claims.
+- Versioned migration `0003_tenant_membership_lifecycle.sql` implements
+  revocation, role administration, disabled-subject checks, and final-owner
+  invariants.
+- Tenant membership APIs never accept a tenant identifier from the client and
+  require explicit confirmation for revocation.
+- Private identity administration Toolbox tools are excluded from all agent
+  toolsets.
+- Password-policy and controlled-registration configuration is implemented but
+  cannot be claimed active until the Phase 5 Identity Platform call succeeds.
+
 ### Deferred integration checks
 
 - Identity Platform configuration and token lifecycle

@@ -118,8 +118,21 @@ provisioning. Production must use `AUTH_MODE=identity_platform`;
 for `ENVIRONMENT=production`.
 
 Clients send `Authorization: Bearer <Identity Platform ID token>`. The assistant
-verifies the token before application routes run. `/healthz` and `/readyz`
-remain public and do not expose identity or credential details.
+verifies the token and resolves an active AlloyDB membership before application
+routes run. The database role is authoritative; stale token role claims cannot
+retain access after demotion or revocation. `/healthz` and `/readyz` remain
+public and do not expose identity or credential details.
+
+Tenant owners and administrators use the authenticated membership contract at
+`/api/tenant/members`. Tenant and actor IDs always come from the verified server
+context. Revocation is soft, requires `confirm=true`, and cannot remove the last
+owner. These administration tools are not exposed to an AI agent.
+
+Set `IDENTITY_BEFORE_CREATE_URL` to a deployed Identity Platform `beforeCreate`
+blocking function before running `phase5.sh identity` with controlled
+registration enabled. The identity setup also enforces the configured password
+length and complexity policy. An empty hook URL is reported as not enforced and
+cloud application fails closed; the offline plan never claims signup is blocked.
 
 Run phases independently:
 

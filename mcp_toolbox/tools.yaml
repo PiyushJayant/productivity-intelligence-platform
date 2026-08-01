@@ -100,8 +100,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
         )
       ORDER BY created_at DESC
       LIMIT ${DEFAULT_PAGE_SIZE};
@@ -132,8 +134,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $3::uuid AND m.subject_id = $4::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
             AND m.role IN ('owner', 'admin', 'member')
         )
       RETURNING id, title, status;
@@ -169,8 +173,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $3::uuid AND m.subject_id = $4::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
             AND m.role IN ('owner', 'admin', 'member')
         )
       RETURNING tasks.id, tasks.title, tasks.status;
@@ -197,8 +203,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
             AND m.role IN ('owner', 'admin', 'member')
         )
       RETURNING id, title;
@@ -230,8 +238,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
             AND m.role IN ('owner', 'admin', 'member')
         )
       RETURNING tasks.id, tasks.title;
@@ -300,8 +310,10 @@ tools:
           AND EXISTS (
             SELECT 1 FROM tenant_memberships m
             JOIN tenants t ON t.id = m.tenant_id
+            JOIN subjects s ON s.id = m.subject_id
             WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-              AND t.status = 'active'
+              AND t.status = 'active' AND m.status = 'active'
+              AND s.disabled_at IS NULL
           )
       )
       SELECT id, title, content, tags, created_at,
@@ -335,8 +347,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
         )
       ORDER BY created_at DESC
       LIMIT ${DEFAULT_PAGE_SIZE};
@@ -363,8 +377,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
             AND m.role IN ('owner', 'admin', 'member')
         )
       RETURNING id, title;
@@ -396,8 +412,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
             AND m.role IN ('owner', 'admin', 'member')
         )
       RETURNING notes.id, notes.title;
@@ -472,8 +490,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
         )
       ORDER BY date ASC, time ASC
       LIMIT ${DEFAULT_PAGE_SIZE};
@@ -500,8 +520,10 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
             AND m.role IN ('owner', 'admin', 'member')
         )
       RETURNING id, title;
@@ -533,11 +555,114 @@ tools:
         AND EXISTS (
           SELECT 1 FROM tenant_memberships m
           JOIN tenants t ON t.id = m.tenant_id
+          JOIN subjects s ON s.id = m.subject_id
           WHERE m.tenant_id = $2::uuid AND m.subject_id = $3::uuid
-            AND t.status = 'active'
+            AND t.status = 'active' AND m.status = 'active'
+            AND s.disabled_at IS NULL
             AND m.role IN ('owner', 'admin', 'member')
         )
       RETURNING events.id, events.title;
+
+  authorize_identity:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: Authorize one verified external identity against active tenant membership.
+    parameters:
+      - name: tenant_id
+        type: string
+        description: Verified tenant UUID
+      - name: subject_id
+        type: string
+        description: Deterministic internal subject UUID
+      - name: issuer
+        type: string
+        description: Verified token issuer
+      - name: external_subject
+        type: string
+        description: Verified Identity Platform subject
+    statement: >
+      SELECT * FROM authorize_identity($1::uuid, $2::uuid, $3, $4);
+
+  list_tenant_members:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: List tenant memberships for an authorized administrator.
+    parameters:
+      - name: tenant_id
+        type: string
+        description: Server-derived tenant UUID
+      - name: actor_subject_id
+        type: string
+        description: Server-derived administrator subject UUID
+    statement: >
+      SELECT * FROM list_tenant_members($1::uuid, $2::uuid);
+
+  provision_tenant_member:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: Provision or reactivate a tenant membership.
+    parameters:
+      - name: tenant_id
+        type: string
+        description: Server-derived tenant UUID
+      - name: actor_subject_id
+        type: string
+        description: Server-derived administrator subject UUID
+      - name: target_subject_id
+        type: string
+        description: Server-derived target subject UUID
+      - name: issuer
+        type: string
+        description: Trusted Identity Platform issuer
+      - name: external_subject
+        type: string
+        description: Target Identity Platform subject
+      - name: role
+        type: string
+        description: Valid tenant role
+    statement: >
+      SELECT * FROM provision_tenant_member(
+        $1::uuid, $2::uuid, $3::uuid, $4, $5, $6
+      );
+
+  update_tenant_member_role:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: Update a tenant membership role with owner safeguards.
+    parameters:
+      - name: tenant_id
+        type: string
+        description: Server-derived tenant UUID
+      - name: actor_subject_id
+        type: string
+        description: Server-derived administrator subject UUID
+      - name: target_subject_id
+        type: string
+        description: Target internal subject UUID
+      - name: role
+        type: string
+        description: Valid tenant role
+    statement: >
+      SELECT * FROM update_tenant_member_role(
+        $1::uuid, $2::uuid, $3::uuid, $4
+      );
+
+  revoke_tenant_member:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: Soft-revoke a tenant membership with owner safeguards.
+    parameters:
+      - name: tenant_id
+        type: string
+        description: Server-derived tenant UUID
+      - name: actor_subject_id
+        type: string
+        description: Server-derived administrator subject UUID
+      - name: target_subject_id
+        type: string
+        description: Target internal subject UUID
+    statement: >
+      SELECT * FROM revoke_tenant_member($1::uuid, $2::uuid, $3::uuid);
 
 toolsets:
   task-tools:
@@ -560,3 +685,9 @@ toolsets:
     - list_events
     - delete_event
     - delete_events
+
+  identity-admin-tools:
+    - list_tenant_members
+    - provision_tenant_member
+    - update_tenant_member_role
+    - revoke_tenant_member

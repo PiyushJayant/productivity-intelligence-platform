@@ -14,8 +14,13 @@ verified identity source and a database-enforced ownership boundary.
 
 Use Google Cloud Identity Platform ID tokens. The assistant verifies token
 signature, audience, issuer, timestamps, optional Identity Platform tenant,
-application tenant claim, and role at the HTTP boundary. A stable internal
+application tenant claim, and subject at the HTTP boundary. A stable internal
 subject UUID is derived from issuer and external subject.
+
+The JWT role claim is bootstrap metadata, not an authorization decision. Every
+protected request resolves the active membership from AlloyDB and replaces any
+token role with that authoritative role. Membership dependency failure denies
+the request with a retryable service-unavailable response.
 
 The verified identity is stored in a request-local context. MCP Toolbox binds
 `tenant_id` and `subject_id` from that context at invocation time and removes
@@ -32,6 +37,8 @@ request-level tenant isolation.
 
 - A valid JWT alone does not grant data access; its derived subject needs an
   active database membership for the asserted application tenant.
+- Revocation is soft and immediate at the request boundary; the last owner
+  cannot be demoted or revoked.
 - The first owner must be explicitly provisioned with
   `BOOTSTRAP_IDP_SUBJECT`.
 - `/healthz` and `/readyz` remain public; application routes require a bearer

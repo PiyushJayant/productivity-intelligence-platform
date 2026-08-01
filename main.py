@@ -28,6 +28,7 @@ configure_logging()
 # agent lazily on the first conversational request, making readiness vacuous.
 from productivity_intelligence.agent import root_agent as _root_agent  # noqa: E402,F401
 from productivity_intelligence.status import capabilities  # noqa: E402
+from productivity_intelligence.tenant_admin import router as tenant_admin_router  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ if settings.auth_mode == "identity_platform":
 app.middleware("http")(request_observability_middleware)
 app.middleware("http")(identity_middleware)
 logger.info("ADK FastAPI app created successfully")
+app.include_router(tenant_admin_router)
 
 
 @app.get("/healthz", include_in_schema=False)

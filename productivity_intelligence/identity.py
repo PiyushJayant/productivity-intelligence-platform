@@ -14,7 +14,7 @@ import re
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterator, Mapping
 
 import google.auth.transport.requests
@@ -22,8 +22,14 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import id_token
+from starlette.concurrency import run_in_threadpool
 
 from productivity_intelligence.config import settings
+from productivity_intelligence.membership import (
+    MembershipDeniedError,
+    MembershipUnavailableError,
+    membership_store,
+)
 
 LOGGER = logging.getLogger(__name__)
 SUBJECT_NAMESPACE = uuid.UUID("2ea7b872-6bc4-4a37-9a58-75fd18d94086")
@@ -56,13 +62,6 @@ def _uuid_claim(value: Any, claim_name: str) -> uuid.UUID:
         return uuid.UUID(str(value))
     except (TypeError, ValueError, AttributeError) as error:
         raise ValueError(f"{claim_name} must be a UUID") from error
-
-
-def _role_from_claims(claims: Mapping[str, Any]) -> str:
-    role = claims.get(settings.identity_role_claim, "member")
-    if not isinstance(role, str) or role not in {"owner", "admin", "member", "viewer"}:
-        raise ValueError("identity role claim is invalid")
-    return role
 
 
 class IdentityTokenVerifier:
@@ -100,14 +99,17 @@ class IdentityTokenVerifier:
 
         tenant_value = claims.get(settings.identity_tenant_claim)
         if tenant_value is None:
-            tenant_value = settings.default_tenant_id
+            raise ValueError("identity tenant claim is missing")
         tenant_id = _uuid_claim(tenant_value, settings.identity_tenant_claim)
         return RequestIdentity(
             tenant_id=tenant_id,
             subject_id=derive_subject_id(expected_issuer, external_subject),
             external_subject=external_subject,
             issuer=expected_issuer,
-            role=_role_from_claims(claims),
+            # Token roles can be stale after an administrative change. The
+            # authoritative database membership replaces this placeholder
+            # before any protected route runs.
+            role="member",
         )
 
 
@@ -176,6 +178,17 @@ def _forbidden(message: str) -> JSONResponse:
     )
 
 
+def _membership_unavailable() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "service_unavailable",
+            "message": "Tenant authorization is temporarily unavailable.",
+        },
+        status_code=503,
+        headers={"Retry-After": "5"},
+    )
+
+
 async def identity_middleware(request: Request, call_next):
     """Authenticate protected routes and install their trusted tenant context."""
 
@@ -203,6 +216,31 @@ async def identity_middleware(request: Request, call_next):
                 },
             )
             return _unauthorized()
+        try:
+            authoritative_role = await run_in_threadpool(
+                membership_store.authorize,
+                tenant_id=identity.tenant_id,
+                subject_id=identity.subject_id,
+                issuer=identity.issuer,
+                external_subject=identity.external_subject,
+            )
+            identity = replace(identity, role=authoritative_role)
+        except MembershipDeniedError:
+            LOGGER.info(
+                "Rejected inactive tenant membership",
+                extra={
+                    "security_event": "membership_denied",
+                    "tenant_id": str(identity.tenant_id),
+                    "subject_id": str(identity.subject_id),
+                },
+            )
+            return _forbidden("No active membership exists for this tenant.")
+        except MembershipUnavailableError:
+            LOGGER.warning(
+                "Membership verification dependency unavailable",
+                extra={"security_event": "membership_verification_failed"},
+            )
+            return _membership_unavailable()
 
     context_token = _current_identity.set(identity)
     try:

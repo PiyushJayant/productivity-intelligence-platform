@@ -24,7 +24,12 @@ def test_product_and_cloud_resource_names_are_consistent():
 
 def test_toolbox_configuration_is_valid_and_parameterized():
     config = yaml.safe_load((ROOT / "mcp_toolbox" / "tools.yaml").read_text(encoding="utf-8"))
-    assert set(config["toolsets"]) == {"task-tools", "notes-tools", "calendar-tools"}
+    assert set(config["toolsets"]) == {
+        "task-tools",
+        "notes-tools",
+        "calendar-tools",
+        "identity-admin-tools",
+    }
     statements = "\n".join(tool["statement"] for tool in config["tools"].values())
     assert "google_ml.embedding" in statements
     assert "${EMBEDDING_MODEL}" in statements
@@ -38,7 +43,20 @@ def test_toolbox_configuration_is_valid_and_parameterized():
     assert "delete_notes" in config["tools"]
     assert "delete_events" in config["tools"]
     assert "string_to_array" in statements
-    for tool in config["tools"].values():
+    agent_tools = {
+        name
+        for toolset in ("task-tools", "notes-tools", "calendar-tools")
+        for name in config["toolsets"][toolset]
+    }
+    assert not agent_tools & {
+        "authorize_identity",
+        "list_tenant_members",
+        "provision_tenant_member",
+        "update_tenant_member_role",
+        "revoke_tenant_member",
+    }
+    for name in agent_tools:
+        tool = config["tools"][name]
         parameter_names = [parameter["name"] for parameter in tool["parameters"]]
         assert parameter_names[-2:] == ["tenant_id", "subject_id"]
         assert "tenant_id" in tool["statement"]

@@ -17,13 +17,21 @@ operations that require billing.
 ## Phase 1 — Identity and tenant ownership
 
 - Identity Platform JWTs are verified for issuer, audience, signature, expiry,
-  tenant claim, subject, and role.
+  tenant claim, and subject. Token roles are not trusted for authorization.
 - The server derives internal tenant/subject UUIDs; model-visible tools cannot
   provide them.
-- Database memberships enforce tenant ownership.
+- AlloyDB membership is checked on every protected request. Revoked, disabled,
+  mismatched, or unavailable memberships fail closed before agent execution.
+- Owner/admin membership APIs support listing, provisioning, role updates, and
+  explicit-confirmation soft revocation. Database functions enforce privileged
+  role boundaries and prevent removing the final owner.
+- Authorization and administration SQL tools use a private Toolbox toolset that
+  is never loaded into an LLM agent. Model-visible CRUD tools independently
+  require active membership as defense in depth.
 - `setup/identity_setup.py` configures email/password authentication, disables
-  duplicate identities, validates the bootstrap UID, and installs trusted
-  tenant/role claims.
+  duplicate identities, enforces a password policy, validates the bootstrap
+  UID, and installs tenant bootstrap claims. Controlled registration is only
+  reported as active when a `beforeCreate` blocking-function URL is configured.
 
 ## Phase 2 — Federation, security, and AI guardrails
 
