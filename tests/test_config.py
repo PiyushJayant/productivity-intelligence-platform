@@ -17,6 +17,7 @@ def reload_config(monkeypatch, **values):
         "BIGQUERY_ANALYTICS_PROCEDURE",
         "ANALYTICS_MAX_RANGE_DAYS",
         "ANALYTICS_QUERY_TIMEOUT_SECONDS",
+        "ANALYTICS_MAX_BYTES_BILLED",
         "AUTH_MODE",
         "IDENTITY_PLATFORM_PROJECT_ID",
         "DEFAULT_TENANT_ID",
@@ -32,6 +33,7 @@ def reload_config(monkeypatch, **values):
         "BIGQUERY_ANALYTICS_PROCEDURE": "get_productivity_trends_v2",
         "ANALYTICS_MAX_RANGE_DAYS": "730",
         "ANALYTICS_QUERY_TIMEOUT_SECONDS": "30",
+        "ANALYTICS_MAX_BYTES_BILLED": "1073741824",
         "AUTH_MODE": "disabled",
         "IDENTITY_PLATFORM_PROJECT_ID": "test-project",
         "DEFAULT_TENANT_ID": "11111111-1111-4111-8111-111111111111",
@@ -85,6 +87,8 @@ def test_analytics_limits_and_routine_name_are_validated(monkeypatch):
         reload_config(monkeypatch, ANALYTICS_MAX_RANGE_DAYS="0")
     with pytest.raises(ValueError, match="ANALYTICS_QUERY_TIMEOUT_SECONDS"):
         reload_config(monkeypatch, ANALYTICS_QUERY_TIMEOUT_SECONDS="0")
+    with pytest.raises(ValueError, match="ANALYTICS_MAX_BYTES_BILLED"):
+        reload_config(monkeypatch, ANALYTICS_MAX_BYTES_BILLED="0")
     with pytest.raises(ValueError, match="BIGQUERY_ANALYTICS_PROCEDURE"):
         reload_config(
             monkeypatch,

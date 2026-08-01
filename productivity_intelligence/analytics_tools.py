@@ -6,7 +6,15 @@ import json
 import logging
 from datetime import date
 
-from google.api_core.exceptions import GoogleAPICallError
+from google.api_core.exceptions import (
+    DeadlineExceeded,
+    GatewayTimeout,
+    GoogleAPICallError,
+    InternalServerError,
+    ResourceExhausted,
+    ServiceUnavailable,
+    TooManyRequests,
+)
 from google.cloud import bigquery
 
 from productivity_intelligence.config import settings
@@ -18,6 +26,15 @@ from productivity_intelligence.identity import (
 from productivity_intelligence.resilience import retry_with_backoff
 
 VALID_GRAINS = {"day", "month"}
+TRANSIENT_BIGQUERY_ERRORS = (
+    DeadlineExceeded,
+    GatewayTimeout,
+    InternalServerError,
+    ResourceExhausted,
+    ServiceUnavailable,
+    TooManyRequests,
+    TimeoutError,
+)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -94,21 +111,37 @@ def get_productivity_trends(
         ]
     )
     job_config.job_timeout_ms = settings.analytics_query_timeout_seconds * 1000
+    job_config.maximum_bytes_billed = settings.analytics_max_bytes_billed
+    job_config.labels = {
+        "application": "productivity-intelligence",
+        "component": "analytics-agent",
+        "backend": settings.analytics_backend,
+        "contract": (
+            "v2" if settings.analytics_backend == "federated" else "v3"
+        ),
+    }
+    client = bigquery.Client(project=settings.google_cloud_project)
+    job = None
     try:
         def execute_query():
-            job = bigquery.Client(project=settings.google_cloud_project).query(
-                query,
-                job_config=job_config,
-                location=settings.region,
+            nonlocal job
+            if job is None:
+                job = client.query(
+                    query,
+                    job_config=job_config,
+                    location=settings.region,
+                )
+            return job.result(
+                timeout=settings.analytics_query_timeout_seconds,
+                max_results=range_days + 1,
             )
-            return job.result(timeout=settings.analytics_query_timeout_seconds)
 
         result = retry_with_backoff(
             execute_query,
             attempts=settings.analytics_retry_attempts,
             base_seconds=settings.analytics_retry_base_seconds,
             max_seconds=settings.analytics_retry_max_seconds,
-            retryable=(GoogleAPICallError, TimeoutError),
+            retryable=TRANSIENT_BIGQUERY_ERRORS,
         )
         rows = [
             {
@@ -117,10 +150,16 @@ def get_productivity_trends(
             }
             for row in result
         ]
+        if len(rows) > range_days:
+            raise AnalyticsUnavailableError(
+                "Productivity analytics returned an invalid result shape."
+            )
+    except AnalyticsUnavailableError:
+        raise
     except (GoogleAPICallError, TimeoutError) as error:
         LOGGER.warning(
             "Bounded productivity analytics query failed",
-            exc_info=True,
+            extra={"analytics_backend": settings.analytics_backend},
         )
         raise AnalyticsUnavailableError(
             "Productivity analytics is temporarily unavailable. Please retry shortly."

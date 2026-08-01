@@ -58,3 +58,25 @@ to Phase 5.
 - Privacy retention and erasure job execution
 - Read-pool load benchmark and DR/PITR evidence
 - Native BigQuery/Datastream shadow reconciliation
+
+## Phase 2 federation and security guardrails
+
+Status: implemented and validated locally; cloud validation remains Phase 5.
+
+- Federated SQL applies typed date bounds and active tenant membership before
+  aggregation inside AlloyDB.
+- Migration `0004_federation_guardrails.sql` adds analytics query-path indexes
+  and enforces read-only and application-name defaults on the analytics
+  principal. The migration runner reconciles statement and idle timeouts from
+  `.env` on every run so configuration changes do not depend on replaying an
+  immutable migration.
+- BigQuery jobs use maximum-bytes-billed, timeouts, labels, bounded output, and
+  retries only for transient API failures. Dependency exception details are not
+  written to application logs or returned to users.
+- Read-pool routing is configuration-validated and both database instances are
+  handled by suspend/resume and scheduled lifecycle automation.
+- VPC-SC uses dry-run by default. Enforced mode requires an independent explicit
+  acknowledgement because a bad perimeter can lock out deployment and runtime
+  identities.
+- VPC-SC protects supported Google API boundaries; AlloyDB data-plane isolation
+  still depends on private IP, service identity, and database privileges.

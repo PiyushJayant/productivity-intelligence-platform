@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
+from google.api_core.exceptions import BadRequest, ServiceUnavailable
 
 from productivity_intelligence import analytics_tools
 
@@ -18,8 +20,9 @@ class FakeRow:
 
 
 class FakeQuery:
-    def result(self, *, timeout):
+    def result(self, *, timeout, max_results):
         assert timeout == 30
+        assert max_results == 32
         return [FakeRow()]
 
 
@@ -35,7 +38,7 @@ class FakeClient:
 
 
 class TimeoutQuery:
-    def result(self, *, timeout):
+    def result(self, *, timeout, max_results):
         raise TimeoutError
 
 
@@ -84,6 +87,8 @@ def test_productivity_trends_call_one_parameterized_bounded_procedure(monkeypatc
         "22222222-2222-4222-8222-222222222222"
     )
     assert int(job_config.job_timeout_ms) == 30_000
+    assert job_config.maximum_bytes_billed == 1_073_741_824
+    assert job_config.labels["contract"] == "v2"
     assert location == "us-central1"
     assert result["contract_version"] == "v2"
     assert result["rows"][0]["completion_rate"] == 0.6667
@@ -125,3 +130,38 @@ def test_productivity_trends_hide_dependency_timeout(monkeypatch):
         )
 
     assert "Timeout" not in str(failure.value)
+
+
+@pytest.mark.parametrize("failure", [BadRequest("invalid"), ServiceUnavailable("retry")])
+def test_only_transient_bigquery_errors_are_retried(monkeypatch, failure):
+    query_calls = 0
+    result_calls = 0
+
+    class FailedQuery:
+        def result(self, **_kwargs):
+            nonlocal result_calls
+            result_calls += 1
+            raise failure
+
+    class FailedClient:
+        def __init__(self, *, project):
+            pass
+
+        def query(self, *_args, **_kwargs):
+            nonlocal query_calls
+            query_calls += 1
+            return FailedQuery()
+
+    monkeypatch.setattr(analytics_tools.bigquery, "Client", FailedClient)
+    monkeypatch.setattr(
+        analytics_tools, "current_tenant_id", lambda: str(uuid.uuid4())
+    )
+    monkeypatch.setattr(
+        analytics_tools, "current_subject_id", lambda: str(uuid.uuid4())
+    )
+    with pytest.raises(analytics_tools.AnalyticsUnavailableError):
+        analytics_tools.get_productivity_trends(
+            "2026-07-01", "2026-07-31", "month"
+        )
+    assert query_calls == 1
+    assert result_calls == (1 if isinstance(failure, BadRequest) else 3)

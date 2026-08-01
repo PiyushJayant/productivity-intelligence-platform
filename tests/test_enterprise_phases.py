@@ -16,6 +16,7 @@ def test_migrations_are_ordered_unique_and_checksummed():
         "0001_baseline",
         "0002_privacy_taxonomy",
         "0003_tenant_membership_lifecycle",
+        "0004_federation_guardrails",
     ]
     assert all(len(item.checksum) == 64 for item in migrations)
 
@@ -43,6 +44,21 @@ def test_membership_migration_enforces_revocation_and_owner_invariants():
         "CREATE OR REPLACE FUNCTION enforce_active_membership",
     ):
         assert contract in sql
+
+
+def test_federation_migration_is_read_only_bounded_and_indexed():
+    sql = Path("setup/migrations/0004_federation_guardrails.sql").read_text()
+    for contract in (
+        "activity_events_tenant_period_type_idx",
+        "activity_events_tenant_entity_latest_idx",
+        "default_transaction_read_only = on",
+        "application_name = 'productivity-federation'",
+        "REVOKE CREATE ON SCHEMA public",
+    ):
+        assert contract in sql
+    migrate = Path("setup/migrate.py").read_text()
+    assert "SET statement_timeout" in migrate
+    assert "SET idle_in_transaction_session_timeout" in migrate
 
 
 def test_cdc_evaluator_never_changes_infrastructure():

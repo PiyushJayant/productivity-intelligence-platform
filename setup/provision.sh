@@ -282,12 +282,47 @@ if [[ "${ENABLE_ALLOYDB_READ_POOL}" == "true" ]]; then
       --read-pool-node-count="${ALLOYDB_READ_POOL_NODE_COUNT}" \
       --machine-type="${ALLOYDB_READ_POOL_MACHINE_TYPE}" \
       --project="${PROJECT_ID}"
+  else
+    read -r read_pool_machine read_pool_nodes read_pool_activation < <(
+      gcloud alloydb instances describe "${ALLOYDB_READ_POOL}" \
+        --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+        --project="${PROJECT_ID}" \
+        --format='value(machineConfig.machineType,readPoolConfig.nodeCount,activationPolicy)'
+    )
+    if [[ ("${read_pool_machine}" != "${ALLOYDB_READ_POOL_MACHINE_TYPE}" ||
+          "${read_pool_nodes}" != "${ALLOYDB_READ_POOL_NODE_COUNT}") &&
+          "${ALLOW_ALLOYDB_RESIZE}" != "true" ]]; then
+      echo "Error: deployed read-pool shape differs from .env." >&2
+      echo "Set ALLOW_ALLOYDB_RESIZE=true to reconcile it explicitly." >&2
+      exit 1
+    fi
+    if [[ "${read_pool_machine}" != "${ALLOYDB_READ_POOL_MACHINE_TYPE}" ||
+          "${read_pool_nodes}" != "${ALLOYDB_READ_POOL_NODE_COUNT}" ]]; then
+      gcloud alloydb instances update "${ALLOYDB_READ_POOL}" \
+        --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+        --machine-type="${ALLOYDB_READ_POOL_MACHINE_TYPE}" \
+        --read-pool-node-count="${ALLOYDB_READ_POOL_NODE_COUNT}" \
+        --project="${PROJECT_ID}" --quiet
+    fi
+    if [[ "${read_pool_activation}" != "${ALLOYDB_ACTIVATION_POLICY}" ]]; then
+      gcloud alloydb instances update "${ALLOYDB_READ_POOL}" \
+        --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+        --activation-policy="${ALLOYDB_ACTIVATION_POLICY}" \
+        --project="${PROJECT_ID}" --quiet
+    fi
   fi
   if [[ "${ALLOYDB_ACTIVATION_POLICY}" == "NEVER" ]]; then
     gcloud alloydb instances update "${ALLOYDB_READ_POOL}" \
       --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
       --activation-policy=NEVER --project="${PROJECT_ID}" --quiet
   fi
+elif gcloud alloydb instances describe "${ALLOYDB_READ_POOL}" \
+    --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+    --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud alloydb instances update "${ALLOYDB_READ_POOL}" \
+    --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+    --activation-policy=NEVER --project="${PROJECT_ID}" --quiet
+  echo "[OK] Disabled AlloyDB read pool is explicitly suspended."
 fi
 
 admin_flags_file="$(mktemp)"

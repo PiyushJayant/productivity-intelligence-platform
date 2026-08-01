@@ -38,11 +38,18 @@ operations that require billing.
 - `get_productivity_trends_v2` embeds validated date, tenant, and subject
   boundaries inside PostgreSQL SQL executed by `EXTERNAL_QUERY`.
 - Analytics has a fixed two-year maximum, strict date/grain validation, safe
-  errors, timeouts, bounded retry, and no model-authored SQL.
-- An optional AlloyDB read pool isolates analytical cache/CPU pressure.
+  errors, database and BigQuery timeouts, a maximum-bytes-billed ceiling,
+  transient-only bounded retry, result-cardinality checks, job labels, and no
+  model-authored SQL.
+- The analytics role is database-enforced read-only, has statement and idle
+  transaction timeouts, and receives query-path indexes for bounded periods and
+  latest task status.
+- An optional AlloyDB read pool isolates analytical cache/CPU pressure. Routing,
+  manual suspension, and scheduled lifecycle automation manage the primary and
+  read pool as one configured unit.
 - Optional CMEK and VPC Service Controls are implemented by
-  `setup/security_setup.sh`; disabled by default to avoid accidental spend or
-  organization-policy disruption.
+  `setup/security_setup.sh`; disabled by default. VPC-SC begins in dry-run mode
+  and enforcement requires a separate lockout-risk acknowledgement.
 
 ## Phase 3 — Delivery, resilience, and evidence
 

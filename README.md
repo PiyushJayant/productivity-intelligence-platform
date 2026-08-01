@@ -157,6 +157,13 @@ Or run the complete workflow:
 Set `SEED_DEMO=true` in `.env` for idempotent shared synthetic records. Shell
 overrides are intentionally unsupported because `.env` is the SOT.
 
+Federated analytics is bounded by `ANALYTICS_MAX_RANGE_DAYS`,
+`ANALYTICS_QUERY_TIMEOUT_SECONDS`, and `ANALYTICS_MAX_BYTES_BILLED`. When
+`ENABLE_ALLOYDB_READ_POOL=true`, `ANALYTICS_ALLOYDB_INSTANCE` must name the
+configured read pool and lifecycle commands manage both instances. VPC Service
+Controls remains opt-in and defaults to `VPC_SC_MODE=dry-run`; enforced mode
+also requires `VPC_SC_ENFORCEMENT_ACK=I_ACKNOWLEDGE_VPC_SC_LOCKOUT_RISK`.
+
 The full workflow:
 
 1. Validates the complete configuration contract, project access, and billing.

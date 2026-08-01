@@ -133,6 +133,7 @@ class Settings:
     analytics_thinking_budget: int
     analytics_max_range_days: int
     analytics_query_timeout_seconds: int
+    analytics_max_bytes_billed: int
     agent_context_max_events: int
     model_temperature: float
     default_timezone: str
@@ -211,6 +212,9 @@ class Settings:
             ),
             analytics_query_timeout_seconds=_positive_integer(
                 "ANALYTICS_QUERY_TIMEOUT_SECONDS"
+            ),
+            analytics_max_bytes_billed=_positive_integer(
+                "ANALYTICS_MAX_BYTES_BILLED"
             ),
             agent_context_max_events=_positive_integer("AGENT_CONTEXT_MAX_EVENTS"),
             model_temperature=_float("MODEL_TEMPERATURE"),

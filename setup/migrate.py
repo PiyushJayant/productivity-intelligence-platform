@@ -49,6 +49,12 @@ def main() -> None:
     admin_password = required("ADMIN_DB_PASSWORD")
     app_password = required("APP_DB_PASSWORD")
     analytics_password = required("ANALYTICS_DB_PASSWORD")
+    try:
+        analytics_timeout_ms = int(required("ANALYTICS_QUERY_TIMEOUT_SECONDS")) * 1000
+    except ValueError as error:
+        raise ValueError("ANALYTICS_QUERY_TIMEOUT_SECONDS must be an integer") from error
+    if analytics_timeout_ms < 1000:
+        raise ValueError("ANALYTICS_QUERY_TIMEOUT_SECONDS must be positive")
     default_tenant_id = str(uuid.UUID(required("DEFAULT_TENANT_ID")))
     auth_mode = required("AUTH_MODE").lower()
     if auth_mode == "identity_platform":
@@ -137,6 +143,15 @@ def main() -> None:
             )
         completed = apply_migrations(cursor, migrations)
         print(f"[OK] Applied migrations: {completed or ['none']}")
+        analytics_timeout = quote_literal(f"{analytics_timeout_ms}ms")
+        cursor.execute(
+            f"ALTER ROLE {role_identifiers[analytics_user]} "
+            f"SET statement_timeout = {analytics_timeout}"
+        )
+        cursor.execute(
+            f"ALTER ROLE {role_identifiers[analytics_user]} "
+            f"SET idle_in_transaction_session_timeout = {analytics_timeout}"
+        )
         cursor.execute(
             f"ALTER ROLE {role_identifiers[app_user]} "
             f"LOGIN PASSWORD {quote_literal(app_password)}"

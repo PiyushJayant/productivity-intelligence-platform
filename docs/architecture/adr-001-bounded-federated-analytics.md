@@ -50,6 +50,10 @@ signature; tenant identity comes from verified backend request context.
 - Requested dates bound AlloyDB work before aggregation.
 - The LLM cannot provide SQL, connection names, identifiers, or query fragments.
 - Range and timeout settings remain in the `.env` source of truth.
+- BigQuery jobs have a configured maximum-bytes-billed ceiling and low-cardinality
+  attribution labels.
+- The database principal independently enforces read-only transactions and
+  statement/idle timeouts.
 - The public application tool remains stable for a future CDC migration.
 
 ### Negative
@@ -65,9 +69,13 @@ signature; tenant identity comes from verified backend request context.
 
 - Use typed dates, a fixed grain allowlist, fixed SQL templates, and `%T` literal
   rendering.
-- Enforce maximum range and execution timeout in both application and procedure.
+- Enforce maximum range, result cardinality, BigQuery bytes, BigQuery job time,
+  and AlloyDB statement time independently.
+- Retry only transient service, quota, gateway, and deadline failures; permanent
+  query errors fail immediately behind a safe user-facing message.
 - Monitor query latency, error rate, and AlloyDB load.
-- Route the connection to a read pool before analytical load affects OLTP.
+- Route the connection to a read pool before analytical load affects OLTP, and
+  manage that pool in every suspend/resume path so cost state cannot drift.
 
 ## Revisit triggers
 

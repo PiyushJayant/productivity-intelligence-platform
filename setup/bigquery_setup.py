@@ -7,6 +7,7 @@ import os
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 
@@ -61,7 +62,21 @@ def create_analytics_contracts(
         dataset_ref.default_encryption_configuration = (
             bigquery.EncryptionConfiguration(kms_key_name=key)
         )
-    client.create_dataset(dataset_ref, exists_ok=True)
+    try:
+        existing_dataset = client.get_dataset(dataset_ref.reference)
+    except NotFound:
+        client.create_dataset(dataset_ref)
+    else:
+        if existing_dataset.location.lower() != region.lower():
+            raise ValueError("existing BigQuery dataset is in a different region")
+        if dataset_ref.default_encryption_configuration is not None:
+            existing_dataset.default_encryption_configuration = (
+                dataset_ref.default_encryption_configuration
+            )
+            client.update_dataset(
+                existing_dataset,
+                ["default_encryption_configuration"],
+            )
 
     connection = f"{project_id}.{region}.{connection_id}"
     # Date bounds and the trusted tenant ID are embedded in the PostgreSQL
@@ -143,6 +158,7 @@ def create_analytics_contracts(
               WHERE m.tenant_id = e.tenant_id
                 AND m.subject_id = '%s'::uuid
                 AND t.status = 'active'
+                AND m.status = 'active'
             )
             AND NOT e.is_synthetic
         ),

@@ -72,24 +72,53 @@ def execute_update(update: LifecycleUpdate) -> dict[str, object]:
         return json.loads(response.read())
 
 
+def configured_instances(primary: str, additional: str) -> tuple[str, ...]:
+    """Return unique, validated instance names in deterministic order."""
+
+    candidates = [primary, *additional.split(",")]
+    instances: list[str] = []
+    for candidate in candidates:
+        name = candidate.strip()
+        if not name:
+            continue
+        if not all(
+            character.islower() or character.isdigit() or character == "-"
+            for character in name
+        ):
+            raise ValueError("AlloyDB instance names contain unsupported characters")
+        if name not in instances:
+            instances.append(name)
+    return tuple(instances)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--action", choices=("resume", "suspend"), required=True)
     args = parser.parse_args()
-    update = build_lifecycle_update(
-        project=required_env("GOOGLE_CLOUD_PROJECT"),
-        region=required_env("ALLOYDB_REGION"),
-        cluster=required_env("ALLOYDB_CLUSTER"),
-        instance=required_env("ALLOYDB_INSTANCE"),
-        action=args.action,
+    project = required_env("GOOGLE_CLOUD_PROJECT")
+    region = required_env("ALLOYDB_REGION")
+    cluster = required_env("ALLOYDB_CLUSTER")
+    instances = configured_instances(
+        required_env("ALLOYDB_INSTANCE"),
+        os.getenv("ALLOYDB_ADDITIONAL_INSTANCES", ""),
     )
-    operation = execute_update(update)
+    operations = []
+    for instance in instances:
+        update = build_lifecycle_update(
+            project=project,
+            region=region,
+            cluster=cluster,
+            instance=instance,
+            action=args.action,
+        )
+        operations.append(execute_update(update).get("name", "unknown"))
     print(
         json.dumps(
             {
                 "status": "requested",
                 "action": args.action,
-                "operation": operation.get("name", "unknown"),
+                "instances": list(instances),
+                "operations": operations,
             },
             separators=(",", ":"),
         )

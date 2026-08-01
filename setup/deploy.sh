@@ -88,7 +88,7 @@ run_migration() {
     --subnet="${VPC_SUBNET}" --vpc-egress=private-ranges-only \
     --cpu="${MIGRATION_CPU}" --memory="${MIGRATION_MEMORY}" \
     --labels="${RESOURCE_LABELS}" \
-    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ADMIN_DB_USER=${ADMIN_DB_USER},ALLOYDB_USER=${ALLOYDB_USER},ANALYTICS_DB_USER=${ANALYTICS_DB_USER},EMBEDDING_MODEL=${EMBEDDING_MODEL},EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS},SEED_DEMO=${SEED_DEMO},AUTH_MODE=${AUTH_MODE},IDENTITY_PLATFORM_PROJECT_ID=${IDENTITY_PLATFORM_PROJECT_ID},DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID},DEMO_SUBJECT_ID=${DEMO_SUBJECT_ID},BOOTSTRAP_IDP_SUBJECT=${BOOTSTRAP_IDP_SUBJECT}" \
+    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ADMIN_DB_USER=${ADMIN_DB_USER},ALLOYDB_USER=${ALLOYDB_USER},ANALYTICS_DB_USER=${ANALYTICS_DB_USER},EMBEDDING_MODEL=${EMBEDDING_MODEL},EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS},SEED_DEMO=${SEED_DEMO},AUTH_MODE=${AUTH_MODE},IDENTITY_PLATFORM_PROJECT_ID=${IDENTITY_PLATFORM_PROJECT_ID},DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID},DEMO_SUBJECT_ID=${DEMO_SUBJECT_ID},BOOTSTRAP_IDP_SUBJECT=${BOOTSTRAP_IDP_SUBJECT},ANALYTICS_QUERY_TIMEOUT_SECONDS=${ANALYTICS_QUERY_TIMEOUT_SECONDS}" \
     --set-secrets="ADMIN_DB_PASSWORD=${ADMIN_DB_SECRET}:${admin_version},APP_DB_PASSWORD=${APP_DB_SECRET}:${app_version},ANALYTICS_DB_PASSWORD=${ANALYTICS_DB_SECRET}:${analytics_version}" \
     --max-retries=0 --task-timeout="${MIGRATION_TIMEOUT}s"
   gcloud run jobs execute "${MIGRATION_JOB_NAME}" --region="${REGION}" \
@@ -122,7 +122,7 @@ ensure_scheduler_job() {
 }
 
 deploy_lifecycle_automation() {
-  local action job_name scheduler_job
+  local action job_name scheduler_job additional_instances=""
   if [[ "${ENABLE_SCHEDULED_LIFECYCLE}" != "true" ]]; then
     for action in resume suspend; do
       scheduler_job="${LIFECYCLE_JOB_NAME}-${action}"
@@ -135,6 +135,10 @@ deploy_lifecycle_automation() {
     return
   fi
 
+  if [[ "${ENABLE_ALLOYDB_READ_POOL}" == "true" ]]; then
+    additional_instances="${ALLOYDB_READ_POOL}"
+  fi
+
   for action in resume suspend; do
     job_name="${LIFECYCLE_JOB_NAME}-${action}"
     gcloud run jobs deploy "${job_name}" --image="${MIGRATION_IMAGE}" \
@@ -143,7 +147,7 @@ deploy_lifecycle_automation() {
       --args="lifecycle.py,--action=${action}" \
       --cpu=1 --memory=512Mi --max-retries=1 --task-timeout=300s \
       --labels="${RESOURCE_LABELS}" \
-      --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE}"
+      --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE},ALLOYDB_ADDITIONAL_INSTANCES=${additional_instances}"
     gcloud run jobs add-iam-policy-binding "${job_name}" --region="${REGION}" \
       --project="${PROJECT_ID}" --member="serviceAccount:${SCHEDULER_SA}" \
       --role=roles/run.invoker --quiet >/dev/null
@@ -248,7 +252,7 @@ deploy_assistant() {
     --concurrency="${ASSISTANT_CONCURRENCY}" --timeout="${ASSISTANT_TIMEOUT}" \
     --cpu-throttling --labels="${RESOURCE_LABELS}" \
     "${traffic_args[@]}" \
-    --set-env-vars="APP_MODE=${APP_MODE},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},REGION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI},MODEL=${MODEL},EMBEDDING_MODEL=${EMBEDDING_MODEL},TOOLBOX_URL=${toolbox_url},TOOLBOX_AUDIENCE=${toolbox_url},BIGQUERY_MCP_URL=${BIGQUERY_MCP_URL},BIGQUERY_DATASET=${BIGQUERY_DATASET},BIGQUERY_CONNECTION_ID=${BIGQUERY_CONNECTION_ID},BIGQUERY_ANALYTICS_PROCEDURE=${BIGQUERY_ANALYTICS_PROCEDURE},ANALYTICS_BACKEND=${ANALYTICS_BACKEND},BIGQUERY_NATIVE_TVF=${BIGQUERY_NATIVE_TVF},ANALYTICS_RETRY_ATTEMPTS=${ANALYTICS_RETRY_ATTEMPTS},ANALYTICS_RETRY_BASE_SECONDS=${ANALYTICS_RETRY_BASE_SECONDS},ANALYTICS_RETRY_MAX_SECONDS=${ANALYTICS_RETRY_MAX_SECONDS},PRIVACY_RETENTION_DAYS=${PRIVACY_RETENTION_DAYS},TAXONOMY_VERSION=${TAXONOMY_VERSION},ROUTER_MAX_OUTPUT_TOKENS=${ROUTER_MAX_OUTPUT_TOKENS},ROUTER_THINKING_BUDGET=${ROUTER_THINKING_BUDGET},SPECIALIST_MAX_OUTPUT_TOKENS=${SPECIALIST_MAX_OUTPUT_TOKENS},SPECIALIST_THINKING_BUDGET=${SPECIALIST_THINKING_BUDGET},ANALYTICS_MAX_OUTPUT_TOKENS=${ANALYTICS_MAX_OUTPUT_TOKENS},ANALYTICS_THINKING_BUDGET=${ANALYTICS_THINKING_BUDGET},ANALYTICS_MAX_RANGE_DAYS=${ANALYTICS_MAX_RANGE_DAYS},ANALYTICS_QUERY_TIMEOUT_SECONDS=${ANALYTICS_QUERY_TIMEOUT_SECONDS},AGENT_CONTEXT_MAX_EVENTS=${AGENT_CONTEXT_MAX_EVENTS},MODEL_TEMPERATURE=${MODEL_TEMPERATURE},DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE},DEFAULT_PAGE_SIZE=${DEFAULT_PAGE_SIZE},LOG_LEVEL=${LOG_LEVEL},STRUCTURED_LOGGING=${STRUCTURED_LOGGING},ENABLE_REQUEST_LOGGING=${ENABLE_REQUEST_LOGGING},REQUEST_ID_HEADER=${REQUEST_ID_HEADER},AUTH_MODE=${AUTH_MODE},IDENTITY_PLATFORM_PROJECT_ID=${IDENTITY_PLATFORM_PROJECT_ID},IDENTITY_PLATFORM_TENANT_ID=${IDENTITY_PLATFORM_TENANT_ID:-},IDENTITY_TENANT_CLAIM=${IDENTITY_TENANT_CLAIM},IDENTITY_ROLE_CLAIM=${IDENTITY_ROLE_CLAIM},DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID},DEMO_SUBJECT_ID=${DEMO_SUBJECT_ID},AUTH_CLOCK_SKEW_SECONDS=${AUTH_CLOCK_SKEW_SECONDS}" \
+    --set-env-vars="APP_MODE=${APP_MODE},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION},REGION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI},MODEL=${MODEL},EMBEDDING_MODEL=${EMBEDDING_MODEL},TOOLBOX_URL=${toolbox_url},TOOLBOX_AUDIENCE=${toolbox_url},BIGQUERY_MCP_URL=${BIGQUERY_MCP_URL},BIGQUERY_DATASET=${BIGQUERY_DATASET},BIGQUERY_CONNECTION_ID=${BIGQUERY_CONNECTION_ID},BIGQUERY_ANALYTICS_PROCEDURE=${BIGQUERY_ANALYTICS_PROCEDURE},ANALYTICS_BACKEND=${ANALYTICS_BACKEND},BIGQUERY_NATIVE_TVF=${BIGQUERY_NATIVE_TVF},ANALYTICS_RETRY_ATTEMPTS=${ANALYTICS_RETRY_ATTEMPTS},ANALYTICS_RETRY_BASE_SECONDS=${ANALYTICS_RETRY_BASE_SECONDS},ANALYTICS_RETRY_MAX_SECONDS=${ANALYTICS_RETRY_MAX_SECONDS},PRIVACY_RETENTION_DAYS=${PRIVACY_RETENTION_DAYS},TAXONOMY_VERSION=${TAXONOMY_VERSION},ROUTER_MAX_OUTPUT_TOKENS=${ROUTER_MAX_OUTPUT_TOKENS},ROUTER_THINKING_BUDGET=${ROUTER_THINKING_BUDGET},SPECIALIST_MAX_OUTPUT_TOKENS=${SPECIALIST_MAX_OUTPUT_TOKENS},SPECIALIST_THINKING_BUDGET=${SPECIALIST_THINKING_BUDGET},ANALYTICS_MAX_OUTPUT_TOKENS=${ANALYTICS_MAX_OUTPUT_TOKENS},ANALYTICS_THINKING_BUDGET=${ANALYTICS_THINKING_BUDGET},ANALYTICS_MAX_RANGE_DAYS=${ANALYTICS_MAX_RANGE_DAYS},ANALYTICS_QUERY_TIMEOUT_SECONDS=${ANALYTICS_QUERY_TIMEOUT_SECONDS},ANALYTICS_MAX_BYTES_BILLED=${ANALYTICS_MAX_BYTES_BILLED},AGENT_CONTEXT_MAX_EVENTS=${AGENT_CONTEXT_MAX_EVENTS},MODEL_TEMPERATURE=${MODEL_TEMPERATURE},DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE},DEFAULT_PAGE_SIZE=${DEFAULT_PAGE_SIZE},LOG_LEVEL=${LOG_LEVEL},STRUCTURED_LOGGING=${STRUCTURED_LOGGING},ENABLE_REQUEST_LOGGING=${ENABLE_REQUEST_LOGGING},REQUEST_ID_HEADER=${REQUEST_ID_HEADER},AUTH_MODE=${AUTH_MODE},IDENTITY_PLATFORM_PROJECT_ID=${IDENTITY_PLATFORM_PROJECT_ID},IDENTITY_PLATFORM_TENANT_ID=${IDENTITY_PLATFORM_TENANT_ID:-},IDENTITY_TENANT_CLAIM=${IDENTITY_TENANT_CLAIM},IDENTITY_ROLE_CLAIM=${IDENTITY_ROLE_CLAIM},DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID},DEMO_SUBJECT_ID=${DEMO_SUBJECT_ID},AUTH_CLOCK_SKEW_SECONDS=${AUTH_CLOCK_SKEW_SECONDS}" \
     --set-secrets="PSEUDONYMIZATION_KEY=${PSEUDONYMIZATION_SECRET}:${pseudonymization_version}"
 }
 
@@ -263,41 +267,47 @@ setup_analytics() {
 }
 
 alloydb_details() {
-  gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
+  local instance="${1:-${ALLOYDB_INSTANCE}}"
+  gcloud alloydb instances describe "${instance}" \
     --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" --project="${PROJECT_ID}" \
     --format='value(state,activationPolicy,machineConfig.machineType,availabilityType)'
 }
 
 wait_for_alloydb_state() {
-  local expected="$1" elapsed=0 state=""
+  local instance="$1" expected="$2" elapsed=0 state=""
   while (( elapsed < ALLOYDB_STATE_TIMEOUT_SECONDS )); do
-    state="$(gcloud alloydb instances describe "${ALLOYDB_INSTANCE}" \
+    state="$(gcloud alloydb instances describe "${instance}" \
       --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" --project="${PROJECT_ID}" \
       --format='value(state)' 2>/dev/null || true)"
     [[ "${state}" == "${expected}" ]] && return
     sleep 10
     elapsed=$((elapsed + 10))
   done
-  echo "Error: AlloyDB did not reach ${expected} within ${ALLOYDB_STATE_TIMEOUT_SECONDS}s." >&2
+  echo "Error: AlloyDB ${instance} did not reach ${expected} within ${ALLOYDB_STATE_TIMEOUT_SECONDS}s." >&2
   exit 1
 }
 
 resume_alloydb() {
-  local state activation _machine _availability
-  read -r state activation _machine _availability < <(alloydb_details)
-  if [[ "${state}" == "READY" && "${activation}" == "ALWAYS" ]]; then
-    echo "[OK] AlloyDB is already running."
-    return
-  fi
-  gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
-    --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
-    --project="${PROJECT_ID}" --activation-policy=ALWAYS --quiet
-  wait_for_alloydb_state READY
-  echo "[OK] AlloyDB resumed."
+  local instance state activation _machine _availability
+  local -a instances=("${ALLOYDB_INSTANCE}")
+  [[ "${ENABLE_ALLOYDB_READ_POOL}" == "true" ]] && instances+=("${ALLOYDB_READ_POOL}")
+  for instance in "${instances[@]}"; do
+    read -r state activation _machine _availability < <(alloydb_details "${instance}")
+    if [[ "${state}" == "READY" && "${activation}" == "ALWAYS" ]]; then
+      echo "[OK] AlloyDB ${instance} is already running."
+      continue
+    fi
+    gcloud alloydb instances update "${instance}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --project="${PROJECT_ID}" --activation-policy=ALWAYS --quiet
+    wait_for_alloydb_state "${instance}" READY
+    echo "[OK] AlloyDB ${instance} resumed."
+  done
 }
 
 suspend_alloydb() {
-  local state activation _machine _availability confirmation
+  local instance state activation _machine _availability confirmation
+  local -a instances=("${ALLOYDB_INSTANCE}")
   if [[ "${COST_PROFILE}" == "production" ]]; then
     read -r -p "Type ${PROJECT_ID} to suspend the production database: " confirmation
     [[ "${confirmation}" == "${PROJECT_ID}" ]] || {
@@ -305,16 +315,24 @@ suspend_alloydb() {
       exit 1
     }
   fi
-  read -r state activation _machine _availability < <(alloydb_details)
-  if [[ "${state}" == "STOPPED" || "${activation}" == "NEVER" ]]; then
-    echo "[OK] AlloyDB is already suspended."
-    return
+  if [[ "${ALLOYDB_READ_POOL}" != "${ALLOYDB_INSTANCE}" ]] &&
+      gcloud alloydb instances describe "${ALLOYDB_READ_POOL}" \
+        --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+        --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    instances+=("${ALLOYDB_READ_POOL}")
   fi
-  gcloud alloydb instances update "${ALLOYDB_INSTANCE}" \
-    --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
-    --project="${PROJECT_ID}" --activation-policy=NEVER --quiet
-  wait_for_alloydb_state STOPPED
-  echo "[OK] AlloyDB suspended; instance compute billing is stopped."
+  for instance in "${instances[@]}"; do
+    read -r state activation _machine _availability < <(alloydb_details "${instance}")
+    if [[ "${state}" == "STOPPED" || "${activation}" == "NEVER" ]]; then
+      echo "[OK] AlloyDB ${instance} is already suspended."
+      continue
+    fi
+    gcloud alloydb instances update "${instance}" \
+      --cluster="${ALLOYDB_CLUSTER}" --region="${REGION}" \
+      --project="${PROJECT_ID}" --activation-policy=NEVER --quiet
+    wait_for_alloydb_state "${instance}" STOPPED
+    echo "[OK] AlloyDB ${instance} suspended; instance compute billing is stopped."
+  done
 }
 
 set_service_min_instances() {

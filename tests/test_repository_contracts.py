@@ -253,6 +253,7 @@ def test_bigquery_bounded_procedure_aggregates_inside_alloydb():
     assert "FROM events" not in setup
     assert "latest_status" in setup
     assert "DROP VIEW IF EXISTS" in setup
+    assert "m.status = 'active'" in setup
     assert setup.count("AT TIME ZONE '{timezone}'") >= 2
 
 
@@ -347,6 +348,28 @@ def test_complete_suspend_is_reversible_and_quiesces_request_driven_cost():
     assert "suspend_alloydb" in suspend
     assert "restore_assistant_public_access" in resume
     assert "resume_alloydb" in resume
+    assert 'instances+=("${ALLOYDB_READ_POOL}")' in deploy
+    assert "ALLOYDB_ADDITIONAL_INSTANCES" in deploy
+
+
+def test_phase2_security_controls_are_dry_run_first_and_explicit():
+    common = (ROOT / "setup" / "common.sh").read_text(encoding="utf-8")
+    security = (ROOT / "setup" / "security_setup.sh").read_text(encoding="utf-8")
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "VPC_SC_MODE=dry-run" in example
+    assert "VPC_SC_ENFORCEMENT_ACK=NOT_ACKNOWLEDGED" in example
+    assert "I_ACKNOWLEDGE_VPC_SC_LOCKOUT_RISK" in common
+    assert "perimeters dry-run create" in security
+    assert "perimeters dry-run update" in security
+    assert 'show --encryption_service_account' in security
+    assert "secretmanager.googleapis.com" in security
+
+
+def test_read_pool_routing_cannot_drift_from_feature_flag():
+    common = (ROOT / "setup" / "common.sh").read_text(encoding="utf-8")
+    assert '"${ANALYTICS_ALLOYDB_INSTANCE}" == "${ALLOYDB_READ_POOL}"' in common
+    assert '"${ANALYTICS_ALLOYDB_INSTANCE}" == "${ALLOYDB_INSTANCE}"' in common
 
 
 def test_billing_gate_allows_only_suspension_and_cost_inspection():

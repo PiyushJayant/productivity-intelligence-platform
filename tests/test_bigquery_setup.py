@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from google.api_core.exceptions import NotFound
 
 from setup import bigquery_setup
 
@@ -16,9 +17,14 @@ class FakeClient:
     def __init__(self, *, project: str):
         self.project = project
 
-    def create_dataset(self, dataset, *, exists_ok: bool):
-        assert exists_ok is True
+    def get_dataset(self, reference):
+        raise NotFound("missing")
+
+    def create_dataset(self, dataset):
         return dataset
+
+    def update_dataset(self, dataset, fields):
+        raise AssertionError("missing dataset should be created, not updated")
 
     def query(self, query: str, *, location: str):
         self.queries.append((query, location))
@@ -53,7 +59,43 @@ def test_bounded_tenant_procedure_retires_unscoped_views(monkeypatch):
     assert "p_tenant_id STRING" in procedure
     assert "p_subject_id STRING" in procedure
     assert "e.tenant_id = '%s'::uuid" in procedure
+    assert "m.status = 'active'" in procedure
     assert '"SELECT * FROM EXTERNAL_QUERY(%T, %T)"' in procedure
+
+
+def test_existing_dataset_cmek_is_reconciled(monkeypatch):
+    class ExistingClient(FakeClient):
+        updated = None
+
+        def get_dataset(self, reference):
+            dataset = bigquery_setup.bigquery.Dataset(reference)
+            dataset.location = "us-central1"
+            return dataset
+
+        def create_dataset(self, dataset):
+            raise AssertionError("existing dataset must not be recreated")
+
+        def update_dataset(self, dataset, fields):
+            assert fields == ["default_encryption_configuration"]
+            self.__class__.updated = dataset.default_encryption_configuration
+            return dataset
+
+    monkeypatch.setattr(bigquery_setup.bigquery, "Client", ExistingClient)
+    monkeypatch.setenv("ENABLE_CMEK", "true")
+    monkeypatch.setenv("KMS_KEYRING", "ring")
+    monkeypatch.setenv("KMS_BIGQUERY_KEY", "bq-key")
+    bigquery_setup.create_analytics_contracts(
+        "test-project",
+        "us-central1",
+        "productivity_analytics",
+        "productivity_alloydb",
+        "get_productivity_trends_v2",
+        "Asia/Kolkata",
+        730,
+    )
+    assert ExistingClient.updated.kms_key_name.endswith(
+        "/keyRings/ring/cryptoKeys/bq-key"
+    )
 
 
 @pytest.mark.parametrize(

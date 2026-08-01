@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from setup.lifecycle import build_lifecycle_update
+from setup.lifecycle import build_lifecycle_update, configured_instances
 
 
 @pytest.mark.parametrize(
@@ -33,3 +33,15 @@ def test_lifecycle_update_rejects_unknown_actions():
             instance="sample-instance",
             action="delete",
         )
+
+
+def test_lifecycle_manages_primary_and_read_pool_once():
+    assert configured_instances(
+        "productivity-instance",
+        "productivity-read-pool,productivity-instance",
+    ) == ("productivity-instance", "productivity-read-pool")
+
+
+def test_lifecycle_rejects_unsafe_instance_names():
+    with pytest.raises(ValueError, match="unsupported"):
+        configured_instances("primary", "other/instance")
