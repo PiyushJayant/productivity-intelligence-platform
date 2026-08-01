@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from setup.init_env import SECRET_KEYS, initialize
+from setup.init_env import SECRET_KEYS, initialize, rotate_secret
 
 
 def test_initializer_creates_one_complete_env_with_unique_secrets(tmp_path: Path):
@@ -13,6 +13,7 @@ def test_initializer_creates_one_complete_env_with_unique_secrets(tmp_path: Path
         "ADMIN_DB_PASSWORD=change-me-admin-at-least-24-characters\n"
         "APP_DB_PASSWORD=change-me-application-at-least-24-characters\n"
         "ANALYTICS_DB_PASSWORD=change-me-analytics-at-least-24-characters\n"
+        "PRIVACY_DB_PASSWORD=change-me-privacy-at-least-24-characters\n"
         "PSEUDONYMIZATION_KEY=change-me-pseudonymization-at-least-32-characters\n",
         encoding="utf-8",
     )
@@ -28,3 +29,23 @@ def test_initializer_creates_one_complete_env_with_unique_secrets(tmp_path: Path
     secrets = [values[key] for key in SECRET_KEYS]
     assert len(set(secrets)) == len(SECRET_KEYS)
     assert all(len(value) >= 24 and "change-me" not in value for value in secrets)
+
+
+def test_rotate_secret_changes_only_the_selected_secret(tmp_path: Path):
+    target = tmp_path / ".env"
+    target.write_text(
+        "GOOGLE_CLOUD_PROJECT=test-project\n"
+        "PRIVACY_DB_PASSWORD=old-private-value\n"
+        "APP_DB_PASSWORD=unchanged-value\n",
+        encoding="utf-8",
+    )
+
+    rotate_secret("PRIVACY_DB_PASSWORD", target=target)
+    values = dict(
+        line.split("=", 1)
+        for line in target.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert values["PRIVACY_DB_PASSWORD"] != "old-private-value"
+    assert len(values["PRIVACY_DB_PASSWORD"]) >= 24
+    assert values["APP_DB_PASSWORD"] == "unchanged-value"

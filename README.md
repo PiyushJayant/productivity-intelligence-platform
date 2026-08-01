@@ -362,6 +362,21 @@ upgrades rather than default demo costs. See the architecture ADRs in `docs`.
 
 See `SECURITY.md` for dependency advisory exceptions.
 
+### Privacy operations
+
+Authenticated users submit subject-scoped erasure requests through
+`POST /api/privacy/erasure-requests` with the exact
+`ERASE_SUBJECT_DATA` confirmation. The server injects the verified tenant and
+subject identities; these values are never delegated to the model. A separate
+least-privilege database role performs bounded HMAC pseudonymization, retention,
+and confirmed erasure through fixed SQL functions.
+
+Privacy scheduling is off by default (`ENABLE_SCHEDULED_PRIVACY=false`). Cloud
+deployment or execution is restricted to the billing-gated Phase 5 entry point:
+`setup/phase5.sh privacy` deploys the job without running it, and
+`setup/phase5.sh privacy-erase REQUEST_UUID` requires an interactive exact-value
+confirmation before the irreversible job execution.
+
 ## Cleanup
 
 Use `suspend` for a reusable environment. For complete irreversible removal:

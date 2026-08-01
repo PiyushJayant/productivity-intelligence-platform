@@ -27,6 +27,7 @@ configure_logging()
 # Force capability discovery during process startup. ADK otherwise imports an
 # agent lazily on the first conversational request, making readiness vacuous.
 from productivity_intelligence.agent import root_agent as _root_agent  # noqa: E402,F401
+from productivity_intelligence.privacy_api import router as privacy_router  # noqa: E402
 from productivity_intelligence.status import capabilities  # noqa: E402
 from productivity_intelligence.tenant_admin import router as tenant_admin_router  # noqa: E402
 
@@ -61,6 +62,7 @@ app.middleware("http")(request_observability_middleware)
 app.middleware("http")(identity_middleware)
 logger.info("ADK FastAPI app created successfully")
 app.include_router(tenant_admin_router)
+app.include_router(privacy_router)
 
 
 @app.get("/healthz", include_in_schema=False)

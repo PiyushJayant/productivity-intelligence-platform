@@ -11,14 +11,14 @@ This will delete the Productivity Intelligence Platform resources from:
   Project: ${PROJECT_ID}
   Region:  ${REGION}
   Cloud Run services: ${ASSISTANT_SERVICE_NAME}, ${TOOLBOX_SERVICE_NAME}
-  Cloud Run jobs: ${MIGRATION_JOB_NAME}, ${LIFECYCLE_JOB_NAME}-resume, ${LIFECYCLE_JOB_NAME}-suspend
+  Cloud Run jobs: ${MIGRATION_JOB_NAME}, ${LIFECYCLE_JOB_NAME}-resume, ${LIFECYCLE_JOB_NAME}-suspend, ${PRIVACY_JOB_NAME}
   AlloyDB cluster: ${ALLOYDB_CLUSTER}
   BigQuery dataset/connection: ${BIGQUERY_DATASET}, ${BIGQUERY_CONNECTION_ID}
   Artifact Registry: ${AR_REPO}
-  Secrets: ${ADMIN_DB_SECRET}, ${APP_DB_SECRET}, ${ANALYTICS_DB_SECRET}, ${PSEUDONYMIZATION_SECRET}
+  Secrets: ${ADMIN_DB_SECRET}, ${APP_DB_SECRET}, ${ANALYTICS_DB_SECRET}, ${PRIVACY_DB_SECRET}, ${PSEUDONYMIZATION_SECRET}
   Optional CDC stream: ${DATASTREAM_STREAM}
   Optional KMS key ring: ${KMS_KEYRING}
-  Runtime service accounts: ${ASSISTANT_SA}, ${TOOLBOX_SA}, ${MIGRATION_SA}, ${LIFECYCLE_SA}, ${SCHEDULER_SA}
+  Runtime service accounts: ${ASSISTANT_SA}, ${TOOLBOX_SA}, ${MIGRATION_SA}, ${LIFECYCLE_SA}, ${PRIVACY_SA}, ${SCHEDULER_SA}
   Monitoring: Productivity Intelligence policies, uptime check, and log metrics
   Billing budget: ${BUDGET_NAME}
   Network: ${VPC_NETWORK}/${VPC_SUBNET}
@@ -41,6 +41,10 @@ for action in resume suspend; do
   gcloud run jobs delete "${LIFECYCLE_JOB_NAME}-${action}" --region="${REGION}" \
     --project="${PROJECT_ID}" --quiet 2>/dev/null || true
 done
+gcloud scheduler jobs delete "${PRIVACY_JOB_NAME}-retention" \
+  --location="${REGION}" --project="${PROJECT_ID}" --quiet 2>/dev/null || true
+gcloud run jobs delete "${PRIVACY_JOB_NAME}" --region="${REGION}" \
+  --project="${PROJECT_ID}" --quiet 2>/dev/null || true
 
 while IFS= read -r policy; do
   [[ -z "${policy}" ]] || gcloud monitoring policies delete "${policy}" \
@@ -79,7 +83,7 @@ gcloud alloydb clusters delete "${ALLOYDB_CLUSTER}" --region="${REGION}" \
 gcloud artifacts repositories delete "${AR_REPO}" --location="${REGION}" \
   --project="${PROJECT_ID}" --quiet 2>/dev/null || true
 for secret in "${ADMIN_DB_SECRET}" "${APP_DB_SECRET}" "${ANALYTICS_DB_SECRET}" \
-    "${PSEUDONYMIZATION_SECRET}"; do
+    "${PRIVACY_DB_SECRET}" "${PSEUDONYMIZATION_SECRET}"; do
   gcloud secrets delete "${secret}" --project="${PROJECT_ID}" --quiet 2>/dev/null || true
 done
 if [[ "${ENABLE_CMEK}" == "true" ]]; then
@@ -103,7 +107,7 @@ for role in roles/aiplatform.user roles/mcp.toolUser roles/bigquery.jobUser \
     --member="serviceAccount:${ASSISTANT_SA}" --role="${role}" --condition=None \
     --quiet >/dev/null 2>&1 || true
 done
-for account in "${TOOLBOX_SA}" "${MIGRATION_SA}"; do
+for account in "${TOOLBOX_SA}" "${MIGRATION_SA}" "${PRIVACY_SA}"; do
   for role in roles/alloydb.client roles/logging.logWriter; do
     gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
       --member="serviceAccount:${account}" --role="${role}" --condition=None \
@@ -118,7 +122,7 @@ done
 gcloud iam roles delete "${LIFECYCLE_ROLE_ID}" --project="${PROJECT_ID}" \
   --quiet >/dev/null 2>&1 || true
 for service_account in "${ASSISTANT_SA}" "${TOOLBOX_SA}" "${MIGRATION_SA}" \
-    "${LIFECYCLE_SA}" "${SCHEDULER_SA}"; do
+    "${LIFECYCLE_SA}" "${PRIVACY_SA}" "${SCHEDULER_SA}"; do
   gcloud iam service-accounts delete "${service_account}" --project="${PROJECT_ID}" \
     --quiet 2>/dev/null || true
 done

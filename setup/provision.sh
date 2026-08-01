@@ -82,6 +82,7 @@ ensure_service_account "${ASSISTANT_SA_NAME}" "Productivity Intelligence runtime
 ensure_service_account "${TOOLBOX_SA_NAME}" "Productivity Intelligence Toolbox"
 ensure_service_account "${MIGRATION_SA_NAME}" "Productivity Intelligence migrations"
 ensure_service_account "${LIFECYCLE_SA_NAME}" "Productivity Intelligence lifecycle"
+ensure_service_account "${PRIVACY_SA_NAME}" "Productivity Intelligence privacy operations"
 ensure_service_account "${SCHEDULER_SA_NAME}" "Productivity Intelligence scheduler"
 DEPLOYER_ACCOUNT="$(gcloud config get-value account 2>/dev/null)"
 if [[ "${DEPLOYER_ACCOUNT}" == *".gserviceaccount.com" ]]; then
@@ -121,6 +122,7 @@ done
 for role in roles/alloydb.client roles/logging.logWriter; do
   grant_project_role "${TOOLBOX_SA}" "${role}"
   grant_project_role "${MIGRATION_SA}" "${role}"
+  grant_project_role "${PRIVACY_SA}" "${role}"
 done
 for role in "projects/${PROJECT_ID}/roles/${LIFECYCLE_ROLE_ID}" roles/logging.logWriter; do
   grant_project_role "${LIFECYCLE_SA}" "${role}"
@@ -138,16 +140,24 @@ grant_project_role "${ALLOYDB_SERVICE_AGENT}" roles/aiplatform.user
 ensure_secret_from_env "${ADMIN_DB_SECRET}" "${ADMIN_DB_PASSWORD}"
 ensure_secret_from_env "${APP_DB_SECRET}" "${APP_DB_PASSWORD}"
 ensure_secret_from_env "${ANALYTICS_DB_SECRET}" "${ANALYTICS_DB_PASSWORD}"
+ensure_secret_from_env "${PRIVACY_DB_SECRET}" "${PRIVACY_DB_PASSWORD}"
 ensure_secret_from_env "${PSEUDONYMIZATION_SECRET}" "${PSEUDONYMIZATION_KEY}"
 
 gcloud secrets add-iam-policy-binding "${APP_DB_SECRET}" --project="${PROJECT_ID}" \
   --member="serviceAccount:${TOOLBOX_SA}" --role=roles/secretmanager.secretAccessor \
   --condition=None --quiet >/dev/null
-for secret in "${ADMIN_DB_SECRET}" "${APP_DB_SECRET}" "${ANALYTICS_DB_SECRET}"; do
+for secret in "${ADMIN_DB_SECRET}" "${APP_DB_SECRET}" \
+    "${ANALYTICS_DB_SECRET}" "${PRIVACY_DB_SECRET}"; do
   gcloud secrets add-iam-policy-binding "${secret}" --project="${PROJECT_ID}" \
     --member="serviceAccount:${MIGRATION_SA}" --role=roles/secretmanager.secretAccessor \
     --condition=None --quiet >/dev/null
 done
+gcloud secrets add-iam-policy-binding "${PRIVACY_DB_SECRET}" \
+  --project="${PROJECT_ID}" --member="serviceAccount:${PRIVACY_SA}" \
+  --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null
+gcloud secrets add-iam-policy-binding "${PSEUDONYMIZATION_SECRET}" \
+  --project="${PROJECT_ID}" --member="serviceAccount:${PRIVACY_SA}" \
+  --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null
 gcloud secrets add-iam-policy-binding "${PSEUDONYMIZATION_SECRET}" \
   --project="${PROJECT_ID}" --member="serviceAccount:${ASSISTANT_SA}" \
   --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null

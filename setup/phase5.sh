@@ -46,6 +46,8 @@ Usage: setup/phase5.sh ACTION
   promote    promote the verified candidate to 100 percent traffic
   rollback   send 100 percent traffic to an explicit prior revision
   security   provision enabled CMEK and VPC-SC controls
+  privacy    deploy the disabled-by-default privacy maintenance job
+  privacy-erase REQUEST_UUID  execute one confirmed erasure request
   native     provision native BigQuery v3 contracts (CDC prerequisite)
   cdc        provision the disabled-by-default Datastream CDC resources
   load       run the bounded authenticated analytics load contract
@@ -74,7 +76,7 @@ EOF
   dr-plan)
     "${SCRIPT_DIR}/dr_drill.sh" plan
     ;;
-  identity|provision|build|migrate|deploy|verify|promote|rollback|security|native|cdc|load|monitoring-validate|dr-ha|dr-pitr|dr-cleanup|full)
+  identity|provision|build|migrate|deploy|verify|promote|rollback|security|privacy|privacy-erase|native|cdc|load|monitoring-validate|dr-ha|dr-pitr|dr-cleanup|full)
     require_command gcloud
     require_phase5_acknowledgement
     case "${ACTION}" in
@@ -90,6 +92,11 @@ EOF
         "${SCRIPT_DIR}/deploy.sh" rollback "$2"
         ;;
       security) "${SCRIPT_DIR}/security_setup.sh" ;;
+      privacy) "${SCRIPT_DIR}/deploy.sh" privacy ;;
+      privacy-erase)
+        [[ -n "${2:-}" ]] || { echo "privacy-erase requires a request UUID" >&2; exit 2; }
+        "${SCRIPT_DIR}/deploy.sh" privacy-erase "$2"
+        ;;
       native) "${PYTHON_BIN}" "${SCRIPT_DIR}/native_bigquery_setup.py" ;;
       cdc) "${SCRIPT_DIR}/datastream_setup.sh" ;;
       load) "${PYTHON_BIN}" "${SCRIPT_DIR}/load_test.py" --execute ;;

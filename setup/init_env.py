@@ -14,6 +14,7 @@ SECRET_KEYS = {
     "ADMIN_DB_PASSWORD",
     "APP_DB_PASSWORD",
     "ANALYTICS_DB_PASSWORD",
+    "PRIVACY_DB_PASSWORD",
     "PSEUDONYMIZATION_KEY",
 }
 
@@ -47,11 +48,41 @@ def initialize(
     return target
 
 
+def rotate_secret(key: str, *, target: Path = TARGET) -> Path:
+    """Replace one managed secret without printing or returning its value."""
+    if key not in SECRET_KEYS:
+        raise ValueError(f"Unsupported managed secret: {key}")
+    if not target.exists():
+        raise FileNotFoundError(f"{target} does not exist; initialize it first")
+
+    output: list[str] = []
+    replaced = False
+    for line in target.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            output.append(f"{key}={secrets.token_urlsafe(36)}")
+            replaced = True
+        else:
+            output.append(line)
+    if not replaced:
+        raise ValueError(f"{key} is missing from {target}")
+    target.write_text("\n".join(output) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        target.chmod(0o600)
+    return target
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project", required=True)
+    parser.add_argument("--project")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--rotate-secret", choices=sorted(SECRET_KEYS))
     arguments = parser.parse_args()
+    if arguments.rotate_secret:
+        path = rotate_secret(arguments.rotate_secret)
+        print(f"[OK] Rotated {arguments.rotate_secret} in {path} without displaying it.")
+        return
+    if not arguments.project:
+        parser.error("--project is required unless --rotate-secret is used")
     path = initialize(arguments.project, arguments.force)
     print(f"[OK] Created {path}. Review cost and resource settings before deployment.")
 

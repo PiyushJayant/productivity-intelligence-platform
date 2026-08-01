@@ -74,14 +74,22 @@ operations that require billing.
 
 ## Phase 4A — Semantic enrichment and privacy
 
-- Migration `0002_privacy_taxonomy.sql` creates a versioned, non-identifying
-  topic taxonomy and deterministic ingestion classification.
-- The raw activity ledger receives HMAC subject tokens from the privileged
-  privacy job.
-- `rollup_and_purge_activity` preserves anonymous daily aggregates and removes
-  expired raw events.
-- `privacy_erasure_requests` and `erase_subject_data` provide an auditable,
-  subject-scoped erasure workflow without rotating a tenant-wide key.
+- Migrations `0002_privacy_taxonomy.sql` and `0005_privacy_operations.sql`
+  create a versioned, non-identifying taxonomy and classify tasks, notes, and
+  events at ingestion time. Ledger events inherit the classified topic.
+- `POST /api/privacy/erasure-requests` is authenticated, tenant-scoped, and
+  requires the exact `ERASE_SUBJECT_DATA` confirmation. Tenant identity always
+  comes from verified request context, never request or model parameters.
+- A dedicated `productivity_privacy` database role can execute only fixed
+  security-definer maintenance functions. It cannot select operational tables.
+- The bounded privacy job generates tenant-scoped HMAC subject tokens, rolls up
+  anonymous daily metrics, and purges expired raw ledger events. Its scheduler
+  is disabled by default and is paused whenever the application is suspended.
+- Erasure removes the subject's tenant data, membership, and raw ledger facts;
+  the external identity is irreversibly scrubbed only after its final tenant
+  membership is removed. The final tenant owner cannot be erased.
+- The migration has a PostgreSQL integration contract that applies it twice and
+  validates classification, ledger propagation, erasure, and identifier scrub.
 - Raw text and embeddings remain in AlloyDB; they are not part of the native
   warehouse contract.
 

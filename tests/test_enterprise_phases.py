@@ -17,6 +17,7 @@ def test_migrations_are_ordered_unique_and_checksummed():
         "0002_privacy_taxonomy",
         "0003_tenant_membership_lifecycle",
         "0004_federation_guardrails",
+        "0005_privacy_operations",
     ]
     assert all(len(item.checksum) == 64 for item in migrations)
 
@@ -59,6 +60,21 @@ def test_federation_migration_is_read_only_bounded_and_indexed():
     migrate = Path("setup/migrate.py").read_text()
     assert "SET statement_timeout" in migrate
     assert "SET idle_in_transaction_session_timeout" in migrate
+
+
+def test_privacy_operations_are_least_privilege_and_ingestion_time():
+    sql = Path("setup/migrations/0005_privacy_operations.sql").read_text()
+    for contract in (
+        "tasks_assign_topic",
+        "request_subject_erasure",
+        "list_unpseudonymized_activity",
+        "apply_activity_subject_tokens",
+        "mark_erasure_request_failed",
+        "TO productivity_privacy",
+        "issuer = 'urn:productivity-intelligence:erased'",
+    ):
+        assert contract in sql
+    assert "GRANT SELECT ON activity_events TO productivity_privacy" not in sql
 
 
 def test_cdc_evaluator_never_changes_infrastructure():

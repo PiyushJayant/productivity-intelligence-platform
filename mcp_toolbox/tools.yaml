@@ -664,6 +664,37 @@ tools:
     statement: >
       SELECT * FROM revoke_tenant_member($1::uuid, $2::uuid, $3::uuid);
 
+  request_subject_erasure:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: Submit an idempotent, tenant-scoped subject erasure request.
+    parameters:
+      - name: tenant_id
+        type: string
+        description: Server-derived tenant UUID
+      - name: actor_subject_id
+        type: string
+        description: Server-derived requesting subject UUID
+      - name: target_subject_id
+        type: string
+        description: Server-derived target subject UUID
+    statement: >
+      SELECT * FROM request_subject_erasure($1::uuid, $2::uuid, $3::uuid);
+
+  list_subject_erasure_requests:
+    kind: postgres-sql
+    source: alloydb-productivity
+    description: List authorized tenant-scoped subject erasure requests.
+    parameters:
+      - name: tenant_id
+        type: string
+        description: Server-derived tenant UUID
+      - name: actor_subject_id
+        type: string
+        description: Server-derived requesting subject UUID
+    statement: >
+      SELECT * FROM list_subject_erasure_requests($1::uuid, $2::uuid);
+
 toolsets:
   task-tools:
     - create_task
@@ -691,3 +722,7 @@ toolsets:
     - provision_tenant_member
     - update_tenant_member_role
     - revoke_tenant_member
+
+  privacy-admin-tools:
+    - request_subject_erasure
+    - list_subject_erasure_requests

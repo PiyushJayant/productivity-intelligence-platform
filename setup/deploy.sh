@@ -13,7 +13,7 @@ fi
 BUILD_TAG_FILE="${REPO_ROOT}/.deploy-build-tag"
 if [[ "${ACTION}" == "build" || "${ACTION}" == "full" ]]; then
   BUILD_TAG="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
-elif [[ "${ACTION}" =~ ^(toolbox|migrate|assistant|lifecycle|deploy)$ ]]; then
+elif [[ "${ACTION}" =~ ^(toolbox|migrate|assistant|lifecycle|privacy|privacy-erase|deploy)$ ]]; then
   if [[ -f "${BUILD_TAG_FILE}" ]]; then
     BUILD_TAG="$(<"${BUILD_TAG_FILE}")"
   else
@@ -76,10 +76,11 @@ deploy_toolbox() {
 }
 
 run_migration() {
-  local admin_version app_version analytics_version instance_uri
+  local admin_version app_version analytics_version privacy_version instance_uri
   admin_version="$(secret_version "${ADMIN_DB_SECRET}")"
   app_version="$(secret_version "${APP_DB_SECRET}")"
   analytics_version="$(secret_version "${ANALYTICS_DB_SECRET}")"
+  privacy_version="$(secret_version "${PRIVACY_DB_SECRET}")"
   instance_uri="projects/${PROJECT_ID}/locations/${REGION}/clusters/${ALLOYDB_CLUSTER}/instances/${ALLOYDB_INSTANCE}"
 
   gcloud run jobs deploy "${MIGRATION_JOB_NAME}" --image="${MIGRATION_IMAGE}" \
@@ -88,21 +89,21 @@ run_migration() {
     --subnet="${VPC_SUBNET}" --vpc-egress=private-ranges-only \
     --cpu="${MIGRATION_CPU}" --memory="${MIGRATION_MEMORY}" \
     --labels="${RESOURCE_LABELS}" \
-    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ADMIN_DB_USER=${ADMIN_DB_USER},ALLOYDB_USER=${ALLOYDB_USER},ANALYTICS_DB_USER=${ANALYTICS_DB_USER},EMBEDDING_MODEL=${EMBEDDING_MODEL},EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS},SEED_DEMO=${SEED_DEMO},AUTH_MODE=${AUTH_MODE},IDENTITY_PLATFORM_PROJECT_ID=${IDENTITY_PLATFORM_PROJECT_ID},DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID},DEMO_SUBJECT_ID=${DEMO_SUBJECT_ID},BOOTSTRAP_IDP_SUBJECT=${BOOTSTRAP_IDP_SUBJECT},ANALYTICS_QUERY_TIMEOUT_SECONDS=${ANALYTICS_QUERY_TIMEOUT_SECONDS}" \
-    --set-secrets="ADMIN_DB_PASSWORD=${ADMIN_DB_SECRET}:${admin_version},APP_DB_PASSWORD=${APP_DB_SECRET}:${app_version},ANALYTICS_DB_PASSWORD=${ANALYTICS_DB_SECRET}:${analytics_version}" \
+    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},ADMIN_DB_USER=${ADMIN_DB_USER},ALLOYDB_USER=${ALLOYDB_USER},ANALYTICS_DB_USER=${ANALYTICS_DB_USER},PRIVACY_DB_USER=${PRIVACY_DB_USER},EMBEDDING_MODEL=${EMBEDDING_MODEL},EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS},SEED_DEMO=${SEED_DEMO},AUTH_MODE=${AUTH_MODE},IDENTITY_PLATFORM_PROJECT_ID=${IDENTITY_PLATFORM_PROJECT_ID},DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID},DEMO_SUBJECT_ID=${DEMO_SUBJECT_ID},BOOTSTRAP_IDP_SUBJECT=${BOOTSTRAP_IDP_SUBJECT},ANALYTICS_QUERY_TIMEOUT_SECONDS=${ANALYTICS_QUERY_TIMEOUT_SECONDS}" \
+    --set-secrets="ADMIN_DB_PASSWORD=${ADMIN_DB_SECRET}:${admin_version},APP_DB_PASSWORD=${APP_DB_SECRET}:${app_version},ANALYTICS_DB_PASSWORD=${ANALYTICS_DB_SECRET}:${analytics_version},PRIVACY_DB_PASSWORD=${PRIVACY_DB_SECRET}:${privacy_version}" \
     --max-retries=0 --task-timeout="${MIGRATION_TIMEOUT}s"
   gcloud run jobs execute "${MIGRATION_JOB_NAME}" --region="${REGION}" \
     --project="${PROJECT_ID}" --wait
 }
 
 ensure_scheduler_job() {
-  local scheduler_job="$1" run_job="$2" schedule="$3"
+  local scheduler_job="$1" run_job="$2" schedule="$3" timezone="${4:-${LIFECYCLE_TIMEZONE}}"
   local run_uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${run_job}:run"
   local -a shared_args=(
     "--location=${REGION}"
     "--project=${PROJECT_ID}"
     "--schedule=${schedule}"
-    "--time-zone=${LIFECYCLE_TIMEZONE}"
+    "--time-zone=${timezone}"
     "--uri=${run_uri}"
     "--http-method=POST"
     "--message-body={}"
@@ -144,7 +145,7 @@ deploy_lifecycle_automation() {
     gcloud run jobs deploy "${job_name}" --image="${MIGRATION_IMAGE}" \
       --region="${REGION}" --project="${PROJECT_ID}" \
       --service-account="${LIFECYCLE_SA}" --command=python \
-      --args="lifecycle.py,--action=${action}" \
+      --args="-m,setup.lifecycle,--action=${action}" \
       --cpu=1 --memory=512Mi --max-retries=1 --task-timeout=300s \
       --labels="${RESOURCE_LABELS}" \
       --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},ALLOYDB_REGION=${ALLOYDB_REGION},ALLOYDB_CLUSTER=${ALLOYDB_CLUSTER},ALLOYDB_INSTANCE=${ALLOYDB_INSTANCE},ALLOYDB_ADDITIONAL_INSTANCES=${additional_instances}"
@@ -157,6 +158,55 @@ deploy_lifecycle_automation() {
   ensure_scheduler_job "${LIFECYCLE_JOB_NAME}-suspend" \
     "${LIFECYCLE_JOB_NAME}-suspend" "${LIFECYCLE_SUSPEND_CRON}"
   echo "[OK] Scheduled AlloyDB lifecycle automation configured."
+}
+
+deploy_privacy_job() {
+  local privacy_version pseudonymization_version instance_uri scheduler_job
+  privacy_version="$(secret_version "${PRIVACY_DB_SECRET}")"
+  pseudonymization_version="$(secret_version "${PSEUDONYMIZATION_SECRET}")"
+  instance_uri="projects/${PROJECT_ID}/locations/${REGION}/clusters/${ALLOYDB_CLUSTER}/instances/${ALLOYDB_INSTANCE}"
+  scheduler_job="${PRIVACY_JOB_NAME}-retention"
+  [[ -n "${privacy_version}" && -n "${pseudonymization_version}" ]] || {
+    echo "Error: privacy job secrets have no enabled numeric version." >&2
+    exit 1
+  }
+  gcloud run jobs deploy "${PRIVACY_JOB_NAME}" --image="${MIGRATION_IMAGE}" \
+    --region="${REGION}" --project="${PROJECT_ID}" \
+    --service-account="${PRIVACY_SA}" --network="${VPC_NETWORK}" \
+    --subnet="${VPC_SUBNET}" --vpc-egress=private-ranges-only \
+    --command=python --args="-m,setup.privacy_job,retention" \
+    --cpu=1 --memory=512Mi --max-retries=1 --task-timeout=900s \
+    --labels="${RESOURCE_LABELS}" \
+    --set-env-vars="ALLOYDB_INSTANCE_URI=${instance_uri},ALLOYDB_DATABASE=${ALLOYDB_DATABASE},PRIVACY_DB_USER=${PRIVACY_DB_USER},PRIVACY_RETENTION_DAYS=${PRIVACY_RETENTION_DAYS},PRIVACY_BATCH_SIZE=${PRIVACY_BATCH_SIZE},PRIVACY_MAX_BATCHES=${PRIVACY_MAX_BATCHES}" \
+    --set-secrets="PRIVACY_DB_PASSWORD=${PRIVACY_DB_SECRET}:${privacy_version},PSEUDONYMIZATION_KEY=${PSEUDONYMIZATION_SECRET}:${pseudonymization_version}"
+  gcloud run jobs add-iam-policy-binding "${PRIVACY_JOB_NAME}" \
+    --region="${REGION}" --project="${PROJECT_ID}" \
+    --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker \
+    --quiet >/dev/null
+  if [[ "${ENABLE_SCHEDULED_PRIVACY}" == "true" ]]; then
+    ensure_scheduler_job "${scheduler_job}" "${PRIVACY_JOB_NAME}" \
+      "${PRIVACY_RETENTION_CRON}" "${PRIVACY_TIMEZONE}"
+  else
+    gcloud scheduler jobs delete "${scheduler_job}" --location="${REGION}" \
+      --project="${PROJECT_ID}" --quiet >/dev/null 2>&1 || true
+    echo "[SKIP] Scheduled privacy retention is disabled in .env."
+  fi
+}
+
+execute_privacy_erasure() {
+  local request_id="${1:-}" confirmation
+  [[ "${request_id}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] || {
+    echo "Error: privacy-erase requires a canonical request UUID." >&2
+    exit 2
+  }
+  read -r -p "Type ERASE_REQUEST_${request_id} to execute the irreversible erasure: " confirmation
+  [[ "${confirmation}" == "ERASE_REQUEST_${request_id}" ]] || {
+    echo "Privacy erasure cancelled." >&2
+    exit 1
+  }
+  gcloud run jobs execute "${PRIVACY_JOB_NAME}" --region="${REGION}" \
+    --project="${PROJECT_ID}" \
+    --args="-m,setup.privacy_job,erase,--request-id=${request_id}" --wait
 }
 
 ensure_bigquery_connection() {
@@ -357,10 +407,10 @@ restore_assistant_public_access() {
     --role=roles/run.invoker --quiet >/dev/null
 }
 
-set_lifecycle_schedulers_state() {
+set_schedulers_state() {
   local action="$1" scheduler_job
-  for scheduler_job in \
-      "${LIFECYCLE_JOB_NAME}-resume" "${LIFECYCLE_JOB_NAME}-suspend"; do
+  shift
+  for scheduler_job in "$@"; do
     if gcloud scheduler jobs describe "${scheduler_job}" --location="${REGION}" \
         --project="${PROJECT_ID}" >/dev/null 2>&1; then
       gcloud scheduler jobs "${action}" "${scheduler_job}" --location="${REGION}" \
@@ -381,7 +431,8 @@ remove_hosted_uptime_check() {
 
 suspend_application() {
   remove_assistant_public_access
-  set_lifecycle_schedulers_state pause
+  set_schedulers_state pause "${LIFECYCLE_JOB_NAME}-resume" \
+    "${LIFECYCLE_JOB_NAME}-suspend" "${PRIVACY_JOB_NAME}-retention"
   remove_hosted_uptime_check
   set_service_min_instances \
     "${ASSISTANT_SERVICE_NAME}" 0 "${ASSISTANT_MAX_INSTANCES}"
@@ -400,7 +451,11 @@ resume_application() {
     "${ASSISTANT_SERVICE_NAME}" "${ASSISTANT_MIN_INSTANCES}" "${ASSISTANT_MAX_INSTANCES}"
   restore_assistant_public_access
   if [[ "${ENABLE_SCHEDULED_LIFECYCLE}" == "true" ]]; then
-    set_lifecycle_schedulers_state resume
+    set_schedulers_state resume "${LIFECYCLE_JOB_NAME}-resume" \
+      "${LIFECYCLE_JOB_NAME}-suspend"
+  fi
+  if [[ "${ENABLE_SCHEDULED_PRIVACY}" == "true" ]]; then
+    set_schedulers_state resume "${PRIVACY_JOB_NAME}-retention"
   fi
   if [[ "${ENABLE_MONITORING}" == "true" ]]; then
     "${SCRIPT_DIR}/monitoring.sh"
@@ -517,6 +572,8 @@ case "${ACTION}" in
   cost-status) cost_status ;;
   migrate) resume_alloydb; run_migration ;;
   lifecycle) deploy_lifecycle_automation ;;
+  privacy) deploy_privacy_job ;;
+  privacy-erase) execute_privacy_erasure "${2:-}" ;;
   toolbox) deploy_toolbox ;;
   assistant) deploy_assistant ;;
   analytics) ensure_bigquery_connection; setup_analytics ;;
@@ -528,6 +585,7 @@ case "${ACTION}" in
     setup_analytics
     deploy_assistant
     deploy_lifecycle_automation
+    deploy_privacy_job
     ;;
   verify) setup_analytics; verify_candidate ;;
   promote) promote ;;
@@ -542,6 +600,7 @@ case "${ACTION}" in
     setup_analytics
     deploy_assistant
     deploy_lifecycle_automation
+    deploy_privacy_job
     verify_candidate
     promote
     if [[ "${ENABLE_MONITORING}" == "true" ]]; then
@@ -552,7 +611,7 @@ case "${ACTION}" in
     fi
     ;;
   *)
-    echo "Usage: $0 [preflight|provision|build|resume|suspend|cost-status|toolbox|migrate|analytics|assistant|lifecycle|deploy|verify|promote|rollback|full]" >&2
+    echo "Usage: $0 [preflight|provision|build|resume|suspend|cost-status|toolbox|migrate|analytics|assistant|lifecycle|privacy|privacy-erase|deploy|verify|promote|rollback|full]" >&2
     exit 1
     ;;
 esac

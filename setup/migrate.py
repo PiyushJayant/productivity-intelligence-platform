@@ -43,6 +43,7 @@ def main() -> None:
     admin_user = required("ADMIN_DB_USER")
     app_user = required("ALLOYDB_USER")
     analytics_user = required("ANALYTICS_DB_USER")
+    privacy_user = required("PRIVACY_DB_USER")
     embedding_model = required("EMBEDDING_MODEL")
     if not re.fullmatch(r"[A-Za-z0-9._@-]+", embedding_model):
         raise ValueError("EMBEDDING_MODEL contains unsupported characters")
@@ -55,6 +56,7 @@ def main() -> None:
     admin_password = required("ADMIN_DB_PASSWORD")
     app_password = required("APP_DB_PASSWORD")
     analytics_password = required("ANALYTICS_DB_PASSWORD")
+    privacy_password = required("PRIVACY_DB_PASSWORD")
     try:
         analytics_timeout_ms = int(required("ANALYTICS_QUERY_TIMEOUT_SECONDS")) * 1000
     except ValueError as error:
@@ -115,6 +117,7 @@ def main() -> None:
         role_identifiers = {
             app_user: quote_identifier(app_user, "ALLOYDB_USER"),
             analytics_user: quote_identifier(analytics_user, "ANALYTICS_DB_USER"),
+            privacy_user: quote_identifier(privacy_user, "PRIVACY_DB_USER"),
         }
         for role, identifier in role_identifiers.items():
             cursor.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
@@ -132,6 +135,7 @@ def main() -> None:
             "__TAXONOMY_VERSION__": required("TAXONOMY_VERSION"),
             "productivity_app": role_identifiers[app_user],
             "productivity_analytics": role_identifiers[analytics_user],
+            "productivity_privacy": role_identifiers[privacy_user],
         }
         migrations = []
         setup_dir = Path(__file__).parent
@@ -177,6 +181,10 @@ def main() -> None:
         cursor.execute(
             f"ALTER ROLE {role_identifiers[analytics_user]} LOGIN PASSWORD "
             f"{quote_literal(analytics_password)}"
+        )
+        cursor.execute(
+            f"ALTER ROLE {role_identifiers[privacy_user]} LOGIN PASSWORD "
+            f"{quote_literal(privacy_password)}"
         )
         if required("SEED_DEMO").lower() == "true":
             seed = (setup_dir / "seed_demo.sql").read_text(encoding="utf-8")

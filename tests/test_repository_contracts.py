@@ -29,6 +29,7 @@ def test_toolbox_configuration_is_valid_and_parameterized():
         "notes-tools",
         "calendar-tools",
         "identity-admin-tools",
+        "privacy-admin-tools",
     }
     statements = "\n".join(tool["statement"] for tool in config["tools"].values())
     assert "google_ml.embedding" in statements
@@ -54,6 +55,8 @@ def test_toolbox_configuration_is_valid_and_parameterized():
         "provision_tenant_member",
         "update_tenant_member_role",
         "revoke_tenant_member",
+        "request_subject_erasure",
+        "list_subject_erasure_requests",
     }
     for name in agent_tools:
         tool = config["tools"][name]
@@ -151,6 +154,7 @@ def test_environment_initializer_generates_every_local_secret():
         "ADMIN_DB_PASSWORD",
         "APP_DB_PASSWORD",
         "ANALYTICS_DB_PASSWORD",
+        "PRIVACY_DB_PASSWORD",
         "PSEUDONYMIZATION_KEY",
     ):
         assert f'"{secret}"' in initializer
@@ -165,7 +169,11 @@ def test_deployment_requires_an_explicit_project_and_installs_monitoring():
     assert "GOOGLE_CLOUD_PROJECT=your-project-id" in example
     full_block = deploy.split("  full)", 1)[1].split("    ;;", 1)[0]
     assert '"${SCRIPT_DIR}/monitoring.sh"' in full_block
-    assert '"${ACTION}" =~ ^(toolbox|migrate|assistant|lifecycle|deploy)$' in deploy
+    build_tag_actions = (
+        '"${ACTION}" =~ '
+        "^(toolbox|migrate|assistant|lifecycle|privacy|privacy-erase|deploy)$"
+    )
+    assert build_tag_actions in deploy
 
 
 def test_single_environment_file_is_the_deployment_source_of_truth():
@@ -341,13 +349,15 @@ def test_complete_suspend_is_reversible_and_quiesces_request_driven_cost():
     )[0]
 
     assert "remove_assistant_public_access" in suspend
-    assert "set_lifecycle_schedulers_state pause" in suspend
+    assert "set_schedulers_state pause" in suspend
+    assert '"${PRIVACY_JOB_NAME}-retention"' in suspend
     assert "remove_hosted_uptime_check" in suspend
     assert '"${ASSISTANT_SERVICE_NAME}" 0' in suspend
     assert '"${TOOLBOX_SERVICE_NAME}" 0' in suspend
     assert "suspend_alloydb" in suspend
     assert "restore_assistant_public_access" in resume
     assert "resume_alloydb" in resume
+    assert 'if [[ "${ENABLE_SCHEDULED_PRIVACY}" == "true" ]]' in resume
     assert 'instances+=("${ALLOYDB_READ_POOL}")' in deploy
     assert "ALLOYDB_ADDITIONAL_INSTANCES" in deploy
 
