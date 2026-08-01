@@ -341,6 +341,17 @@ tool schemas, and every SQL operation checks active membership. A dedicated
 AlloyDB read pool and native BigQuery CDC remain scale-triggered production
 upgrades rather than default demo costs. See the architecture ADRs in `docs`.
 
+Phase 4B is disabled by default. Its source is the privacy-safe
+`analytics_export_events` table, not an operational table. Use
+`setup/phase5.sh cdc-plan` for an offline contract review. Connectivity
+provisioning and activation use separate acknowledgements; activation also
+requires fresh, checksum-verified performance evidence. The CDC password is a
+numeric Secret Manager version reference and is never passed as plaintext.
+Resource existence alone never activates CDC.
+After an approved backfill, `setup/phase5.sh cdc-reconcile START END OUTPUT`
+must produce a current non-empty exact-match artifact. Native analytics remains
+configuration-blocked until its path and SHA-256 are recorded in `.env`.
+
 ## Security and operations
 
 - Toolbox never allows unauthenticated invocation.

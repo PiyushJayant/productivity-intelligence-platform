@@ -18,6 +18,7 @@ def test_migrations_are_ordered_unique_and_checksummed():
         "0003_tenant_membership_lifecycle",
         "0004_federation_guardrails",
         "0005_privacy_operations",
+        "0006_cdc_export_contract",
     ]
     assert all(len(item.checksum) == 64 for item in migrations)
 
@@ -81,6 +82,18 @@ def test_cdc_evaluator_never_changes_infrastructure():
     result = decision(Metrics(6, 11, 71, 11, 12, 7))
     assert result["recommendation"] == "migrate_to_native"
     assert result["automatic_change_performed"] is False
+
+
+def test_cdc_contract_contains_no_direct_identifiers_or_text():
+    sql = Path("setup/migrations/0006_cdc_export_contract.sql").read_text()
+    table = sql.split("CREATE TABLE IF NOT EXISTS analytics_export_events", 1)[1]
+    table = table.split(");", 1)[0]
+    assert "tenant_token" in table
+    assert "subject_token" in table
+    for forbidden in ("tenant_id", "subject_id", "entity_id", "title", "content", "embedding"):
+        assert forbidden not in table
+    assert "CREATE PUBLICATION" not in sql
+    assert "pg_create_logical_replication_slot" not in sql
 
 
 def test_cdc_evaluator_keeps_healthy_federation():

@@ -15,8 +15,8 @@ This will delete the Productivity Intelligence Platform resources from:
   AlloyDB cluster: ${ALLOYDB_CLUSTER}
   BigQuery dataset/connection: ${BIGQUERY_DATASET}, ${BIGQUERY_CONNECTION_ID}
   Artifact Registry: ${AR_REPO}
-  Secrets: ${ADMIN_DB_SECRET}, ${APP_DB_SECRET}, ${ANALYTICS_DB_SECRET}, ${PRIVACY_DB_SECRET}, ${PSEUDONYMIZATION_SECRET}
-  Optional CDC stream: ${DATASTREAM_STREAM}
+  Secrets: ${ADMIN_DB_SECRET}, ${APP_DB_SECRET}, ${ANALYTICS_DB_SECRET}, ${PRIVACY_DB_SECRET}, ${CDC_DB_SECRET}, ${PSEUDONYMIZATION_SECRET}
+  Optional CDC stream/profile/private connection: ${DATASTREAM_STREAM}, ${DATASTREAM_SOURCE_PROFILE}, ${DATASTREAM_DESTINATION_PROFILE}, ${DATASTREAM_PRIVATE_CONNECTION}
   Optional KMS key ring: ${KMS_KEYRING}
   Runtime service accounts: ${ASSISTANT_SA}, ${TOOLBOX_SA}, ${MIGRATION_SA}, ${LIFECYCLE_SA}, ${PRIVACY_SA}, ${SCHEDULER_SA}
   Monitoring: Productivity Intelligence policies, uptime check, and log metrics
@@ -78,12 +78,15 @@ for profile in "${DATASTREAM_SOURCE_PROFILE}" "${DATASTREAM_DESTINATION_PROFILE}
     --location="${DATASTREAM_LOCATION}" --project="${PROJECT_ID}" \
     --quiet 2>/dev/null || true
 done
+gcloud datastream private-connections delete "${DATASTREAM_PRIVATE_CONNECTION}" \
+  --location="${DATASTREAM_LOCATION}" --project="${PROJECT_ID}" \
+  --quiet 2>/dev/null || true
 gcloud alloydb clusters delete "${ALLOYDB_CLUSTER}" --region="${REGION}" \
   --project="${PROJECT_ID}" --force --quiet 2>/dev/null || true
 gcloud artifacts repositories delete "${AR_REPO}" --location="${REGION}" \
   --project="${PROJECT_ID}" --quiet 2>/dev/null || true
 for secret in "${ADMIN_DB_SECRET}" "${APP_DB_SECRET}" "${ANALYTICS_DB_SECRET}" \
-    "${PRIVACY_DB_SECRET}" "${PSEUDONYMIZATION_SECRET}"; do
+    "${PRIVACY_DB_SECRET}" "${CDC_DB_SECRET}" "${PSEUDONYMIZATION_SECRET}"; do
   gcloud secrets delete "${secret}" --project="${PROJECT_ID}" --quiet 2>/dev/null || true
 done
 if [[ "${ENABLE_CMEK}" == "true" ]]; then

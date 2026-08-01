@@ -19,8 +19,12 @@ setup/*
 !setup/__init__.py
 !setup/migration_runner.py
 !setup/privacy_job.py
+!setup/cdc_database.py
+!setup/cdc_contract.py
 !setup/lifecycle.py
 !setup/alloydb_schema.sql
 !setup/migrations/
 !setup/migrations/*.sql
+!productivity_intelligence/__init__.py
+!productivity_intelligence/tokenization.py
 !setup/seed_demo.sql

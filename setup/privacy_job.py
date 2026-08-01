@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import hmac
 import json
 import os
 import uuid
 from typing import Any, cast
 
 from google.cloud.alloydb.connector import Connector, IPTypes
+
+from productivity_intelligence.tokenization import subject_token, tenant_token
 
 
 def required(name: str) -> str:
@@ -41,21 +41,16 @@ def _connect(connector: Connector):
     )
 
 
-def _subject_token(key: bytes, tenant_id: object, subject_id: object) -> str:
-    scoped_subject = f"subject:v1:{tenant_id}:{subject_id}"
-    return hmac.new(key, scoped_subject.encode(), hashlib.sha256).hexdigest()
-
-
 def run_retention(connection: Any) -> dict[str, int]:
     batch_size = bounded_integer("PRIVACY_BATCH_SIZE", 1, 10_000)
     max_batches = bounded_integer("PRIVACY_MAX_BATCHES", 1, 1_000)
     retention_days = bounded_integer("PRIVACY_RETENTION_DAYS", 1, 3_650)
-    key = required("PSEUDONYMIZATION_KEY").encode()
-    pseudonymized = 0
+    key = required("PSEUDONYMIZATION_KEY")
+    exported = 0
     batches = 0
     for _ in range(max_batches):
         cursor = connection.cursor()
-        cursor.execute("SELECT * FROM list_unpseudonymized_activity(%s)", (batch_size,))
+        cursor.execute("SELECT * FROM list_pending_analytics_export(%s)", (batch_size,))
         rows = cursor.fetchall()
         if not rows:
             connection.commit()
@@ -63,15 +58,16 @@ def run_retention(connection: Any) -> dict[str, int]:
         updates = [
             {
                 "event_id": event_id,
-                "token": _subject_token(key, tenant_id, subject_id),
+                "tenant_token": tenant_token(key, tenant_id),
+                "subject_token": subject_token(key, tenant_id, subject_id),
             }
             for event_id, tenant_id, subject_id in rows
         ]
         cursor.execute(
-            "SELECT apply_activity_subject_tokens(%s::jsonb)",
+            "SELECT apply_activity_export_tokens(%s::jsonb)",
             (json.dumps(updates, separators=(",", ":")),),
         )
-        pseudonymized += int(cursor.fetchone()[0])
+        exported += int(cursor.fetchone()[0])
         batches += 1
         connection.commit()
         if len(rows) < batch_size:
@@ -80,7 +76,7 @@ def run_retention(connection: Any) -> dict[str, int]:
     cursor.execute("SELECT rollup_and_purge_activity(%s)", (retention_days,))
     purged = int(cursor.fetchone()[0])
     connection.commit()
-    return {"pseudonymized": pseudonymized, "purged": purged, "batches": batches}
+    return {"exported": exported, "purged": purged, "batches": batches}
 
 
 def run_erasure(connection: Any, request_id: str) -> dict[str, str]:

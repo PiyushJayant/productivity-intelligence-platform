@@ -1,4 +1,4 @@
-"""Provision the Phase 4 native BigQuery schema and v3 TVF contract."""
+"""Validate the Datastream-created table and install the native v3 TVF."""
 
 from __future__ import annotations
 
@@ -6,6 +6,28 @@ import os
 import re
 
 from google.cloud import bigquery
+
+EXPECTED_FIELDS = {
+    "event_id",
+    "tenant_token",
+    "subject_token",
+    "entity_type",
+    "event_type",
+    "priority",
+    "topic_id",
+    "is_synthetic",
+    "occurred_at",
+    "exported_at",
+}
+FORBIDDEN_FIELDS = {
+    "tenant_id",
+    "subject_id",
+    "entity_id",
+    "title",
+    "description",
+    "content",
+    "embedding",
+}
 
 
 def required(name: str) -> str:
@@ -22,42 +44,38 @@ def identifier(name: str) -> str:
     return value
 
 
-def create_native_contracts(
+def validate_native_table(
+    table: bigquery.Table, *, require_partition_filter: bool = True
+) -> None:
+    fields = {field.name for field in table.schema}
+    missing = EXPECTED_FIELDS - fields
+    forbidden = FORBIDDEN_FIELDS & fields
+    if missing:
+        raise RuntimeError(f"native CDC table is missing fields: {sorted(missing)}")
+    if forbidden:
+        raise RuntimeError("native CDC table contains prohibited operational identifiers")
+    if table.time_partitioning is None or table.time_partitioning.field != "occurred_at":
+        raise RuntimeError("native CDC table must be partitioned by occurred_at")
+    if require_partition_filter and not table.require_partition_filter:
+        raise RuntimeError("native CDC table must require a partition filter")
+    clustering = table.clustering_fields or []
+    if clustering[:3] != ["tenant_token", "subject_token", "event_type"]:
+        raise RuntimeError("native CDC table clustering contract is invalid")
+
+
+def native_tvf_sql(
     project: str,
-    region: str,
     dataset: str,
     table: str,
     tvf: str,
     max_range_days: int,
-) -> None:
-    client = bigquery.Client(project=project)
-    schema = [
-        bigquery.SchemaField("event_id", "INT64", mode="REQUIRED"),
-        bigquery.SchemaField("tenant_id", "STRING", mode="REQUIRED"),
-        bigquery.SchemaField("subject_id", "STRING"),
-        bigquery.SchemaField("subject_token", "STRING"),
-        bigquery.SchemaField("entity_type", "STRING", mode="REQUIRED"),
-        bigquery.SchemaField("entity_id", "INT64", mode="REQUIRED"),
-        bigquery.SchemaField("event_type", "STRING", mode="REQUIRED"),
-        bigquery.SchemaField("priority", "STRING"),
-        bigquery.SchemaField("topic_id", "STRING"),
-        bigquery.SchemaField("is_synthetic", "BOOL", mode="REQUIRED"),
-        bigquery.SchemaField("occurred_at", "TIMESTAMP", mode="REQUIRED"),
-    ]
-    table_ref = bigquery.Table(f"{project}.{dataset}.{table}", schema=schema)
-    table_ref.time_partitioning = bigquery.TimePartitioning(
-        field="occurred_at", type_=bigquery.TimePartitioningType.DAY
-    )
-    table_ref.clustering_fields = ["tenant_id", "event_type", "topic_id"]
-    table_ref.require_partition_filter = True
-    client.create_table(table_ref, exists_ok=True)
-
-    sql = f"""
+) -> str:
+    return f"""
     CREATE OR REPLACE TABLE FUNCTION `{project}.{dataset}.{tvf}`(
       p_start_date DATE,
       p_end_date DATE,
       p_grain STRING,
-      p_tenant_id STRING,
+      p_tenant_token STRING,
       p_subject_token STRING
     ) AS (
       WITH validated AS (
@@ -76,7 +94,7 @@ def create_native_contracts(
           event_type
         FROM `{project}.{dataset}.{table}`, validated
         WHERE DATE(occurred_at) BETWEEN p_start_date AND p_end_date
-          AND tenant_id = p_tenant_id
+          AND tenant_token = p_tenant_token
           AND subject_token = p_subject_token
           AND NOT is_synthetic
           AND dates_valid AND range_valid AND grain_valid
@@ -96,12 +114,34 @@ def create_native_contracts(
       ORDER BY period
     )
     """
-    client.query(sql, location=region).result()
+
+
+def create_native_contracts(
+    project: str,
+    region: str,
+    dataset: str,
+    table: str,
+    tvf: str,
+    max_range_days: int,
+) -> None:
+    client = bigquery.Client(project=project)
+    table_ref = client.get_table(f"{project}.{dataset}.{table}")
+    validate_native_table(table_ref, require_partition_filter=False)
+    if not table_ref.require_partition_filter:
+        table_ref.require_partition_filter = True
+        table_ref = client.update_table(table_ref, ["require_partition_filter"])
+    validate_native_table(table_ref)
+    client.query(
+        native_tvf_sql(project, dataset, table, tvf, max_range_days),
+        location=region,
+    ).result()
 
 
 def main() -> None:
     if required("PHASE5_ACTIVE").lower() != "true":
         raise RuntimeError("native BigQuery provisioning is restricted to Phase 5")
+    if required("ENABLE_DATASTREAM").lower() != "true":
+        raise RuntimeError("native contracts require an explicitly activated CDC stream")
     create_native_contracts(
         required("GOOGLE_CLOUD_PROJECT"),
         required("REGION"),
@@ -110,7 +150,7 @@ def main() -> None:
         identifier("BIGQUERY_NATIVE_TVF"),
         int(required("ANALYTICS_MAX_RANGE_DAYS")),
     )
-    print("[OK] Native BigQuery table and v3 TVF contract are ready")
+    print("[OK] Validated privacy-safe CDC table and installed native v3 TVF")
 
 
 if __name__ == "__main__":

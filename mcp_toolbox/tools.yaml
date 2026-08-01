@@ -45,11 +45,17 @@ tools:
       - name: subject_id
         type: string
         description: Server-bound subject UUID
+      - name: tenant_token
+        type: string
+        description: Server-bound pseudonymous tenant token
+      - name: subject_token
+        type: string
+        description: Server-bound tenant-scoped subject token
     statement: >
       WITH created AS (
         INSERT INTO tasks (
           title, description, priority, due_date, due_at, tenant_id,
-          created_by_subject_id
+          created_by_subject_id, analytics_tenant_token, analytics_subject_token
         )
         VALUES (
           $1, $2, $3,
@@ -57,7 +63,7 @@ tools:
             NULLIF($4, '')::date,
             (NULLIF($5, '')::timestamptz AT TIME ZONE '${DEFAULT_TIMEZONE}')::date
           ),
-          NULLIF($5, '')::timestamptz, $6::uuid, $7::uuid
+          NULLIF($5, '')::timestamptz, $6::uuid, $7::uuid, $8, $9
         )
         RETURNING id, title, priority, status, due_date, due_at
       )
@@ -271,14 +277,21 @@ tools:
       - name: subject_id
         type: string
         description: Server-bound subject UUID
+      - name: tenant_token
+        type: string
+        description: Server-bound pseudonymous tenant token
+      - name: subject_token
+        type: string
+        description: Server-bound tenant-scoped subject token
     statement: >
       INSERT INTO notes (
-        title, content, tags, embedding, tenant_id, created_by_subject_id
+        title, content, tags, embedding, tenant_id, created_by_subject_id,
+        analytics_tenant_token, analytics_subject_token
       )
       VALUES (
         $1, $2, $3,
         google_ml.embedding('${EMBEDDING_MODEL}', $1 || ' ' || $2)::vector,
-        $4::uuid, $5::uuid
+        $4::uuid, $5::uuid, $6, $7
       )
       RETURNING id, title, LEFT(content, 180) AS content_preview,
         CASE WHEN tags = '' THEN 'No tags' ELSE tags END AS tags;
@@ -450,13 +463,19 @@ tools:
       - name: subject_id
         type: string
         description: Server-bound subject UUID
+      - name: tenant_token
+        type: string
+        description: Server-bound pseudonymous tenant token
+      - name: subject_token
+        type: string
+        description: Server-bound tenant-scoped subject token
     statement: >
       WITH created AS (
         INSERT INTO events (
           title, date, time, duration_minutes, description, tenant_id,
-          created_by_subject_id
+          created_by_subject_id, analytics_tenant_token, analytics_subject_token
         )
-        VALUES ($1, $2::date, $3::time, $4, $5, $6::uuid, $7::uuid)
+        VALUES ($1, $2::date, $3::time, $4, $5, $6::uuid, $7::uuid, $8, $9)
         RETURNING id, title, date, time, duration_minutes
       )
       SELECT id, title, date::text AS date,

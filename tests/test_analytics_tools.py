@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import replace
 
 import pytest
 from google.api_core.exceptions import BadRequest, ServiceUnavailable
@@ -92,6 +93,29 @@ def test_productivity_trends_call_one_parameterized_bounded_procedure(monkeypatc
     assert location == "us-central1"
     assert result["contract_version"] == "v2"
     assert result["rows"][0]["completion_rate"] == 0.6667
+
+
+def test_native_analytics_uses_only_server_derived_tokens(monkeypatch):
+    FakeClient.calls.clear()
+    monkeypatch.setattr(analytics_tools.bigquery, "Client", FakeClient)
+    monkeypatch.setattr(
+        analytics_tools,
+        "settings",
+        replace(analytics_tools.settings, analytics_backend="native"),
+    )
+    monkeypatch.setattr(analytics_tools, "current_tenant_token", lambda: "a" * 64)
+    monkeypatch.setattr(analytics_tools, "current_subject_token", lambda: "b" * 64)
+
+    result = json.loads(
+        analytics_tools.get_productivity_trends("2026-07-01", "2026-07-31", "month")
+    )
+
+    query, job_config, _ = FakeClient.calls[0]
+    assert "@tenant_token" in query and "@subject_token" in query
+    assert "@tenant_id" not in query and "@subject_id" not in query
+    assert job_config.query_parameters[-2].value == "a" * 64
+    assert job_config.query_parameters[-1].value == "b" * 64
+    assert result["contract_version"] == "v3"
 
 
 @pytest.mark.parametrize(

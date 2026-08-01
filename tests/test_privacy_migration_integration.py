@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -24,8 +25,11 @@ def test_privacy_migration_is_idempotent_and_enforces_core_contracts():
     try:
         prerequisites = Path("tests/sql/privacy_prerequisites.sql").read_text()
         migration = Path("setup/migrations/0005_privacy_operations.sql").read_text()
+        cdc_migration = Path("setup/migrations/0006_cdc_export_contract.sql").read_text()
         cursor.execute(prerequisites)
         cursor.execute(migration)
+        cursor.execute(cdc_migration)
+        cursor.execute(cdc_migration)
         cursor.execute(migration)
 
         tenant = "11111111-1111-4111-8111-111111111111"
@@ -49,9 +53,26 @@ def test_privacy_migration_is_idempotent_and_enforces_core_contracts():
         )
         assert cursor.fetchone()[0] == "operations"
         cursor.execute(
-            "SELECT topic_id FROM activity_events WHERE subject_id = %s", (member,)
+            "SELECT id, topic_id FROM activity_events WHERE subject_id = %s", (member,)
         )
-        assert cursor.fetchone()[0] == "operations"
+        event_id, topic_id = cursor.fetchone()
+        assert topic_id == "operations"
+        token_batch = json.dumps([{
+            "event_id": event_id,
+            "tenant_token": "a" * 64,
+            "subject_token": "b" * 64,
+        }])
+        cursor.execute("SELECT apply_activity_export_tokens(%s::jsonb)", (token_batch,))
+        assert cursor.fetchone()[0] == 1
+        cursor.execute(
+            "SELECT tenant_token, subject_token, topic_id "
+            "FROM analytics_export_events WHERE event_id = %s",
+            (event_id,),
+        )
+        tenant_token, subject_token, export_topic = cursor.fetchone()
+        assert tenant_token.strip() == "a" * 64
+        assert subject_token.strip() == "b" * 64
+        assert export_topic == "operations"
 
         cursor.execute(
             "SELECT request_id FROM request_subject_erasure(%s, %s, %s)",

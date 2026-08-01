@@ -8,7 +8,6 @@ arguments.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import logging
 import re
 import uuid
@@ -30,6 +29,7 @@ from productivity_intelligence.membership import (
     MembershipUnavailableError,
     membership_store,
 )
+from productivity_intelligence.tokenization import subject_token, tenant_token
 
 LOGGER = logging.getLogger(__name__)
 SUBJECT_NAMESPACE = uuid.UUID("2ea7b872-6bc4-4a37-9a58-75fd18d94086")
@@ -132,14 +132,20 @@ def current_subject_id() -> str:
 
 
 def current_subject_token() -> str:
-    """Return a keyed, non-reversible analytics subject token."""
+    """Return a tenant-scoped, keyed analytics subject token."""
 
-    subject_id = str(require_identity().subject_id).encode("utf-8")
-    return hmac.new(
-        settings.pseudonymization_key.encode("utf-8"),
-        subject_id,
-        hashlib.sha256,
-    ).hexdigest()
+    identity = require_identity()
+    return subject_token(
+        settings.pseudonymization_key,
+        identity.tenant_id,
+        identity.subject_id,
+    )
+
+
+def current_tenant_token() -> str:
+    """Return a keyed tenant token without exposing the operational UUID."""
+
+    return tenant_token(settings.pseudonymization_key, require_identity().tenant_id)
 
 
 @contextmanager

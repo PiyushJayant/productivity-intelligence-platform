@@ -15,14 +15,14 @@ class FakeCursor:
 
     def execute(self, sql, parameters):
         self.last_sql = sql
-        if "apply_activity_subject_tokens" in sql:
+        if "apply_activity_export_tokens" in sql:
             self.payloads.append(parameters[0])
 
     def fetchall(self):
         return self.batches.pop(0) if self.batches else []
 
     def fetchone(self):
-        if "apply_activity_subject_tokens" in self.last_sql:
+        if "apply_activity_export_tokens" in self.last_sql:
             return (len(json.loads(self.payloads[-1])),)
         return (3,)
 
@@ -54,16 +54,17 @@ def test_retention_pseudonymizes_in_bounded_batches(monkeypatch):
 
     result = privacy_job.run_retention(connection)
 
-    assert result == {"pseudonymized": 2, "purged": 3, "batches": 1}
+    assert result == {"exported": 2, "purged": 3, "batches": 1}
     payload = json.loads(connection.cursor_instance.payloads[0])
-    assert all(len(item["token"]) == 64 for item in payload)
+    assert all(len(item["tenant_token"]) == 64 for item in payload)
+    assert all(len(item["subject_token"]) == 64 for item in payload)
     assert "subject-a" not in connection.cursor_instance.payloads[0]
 
 
 def test_subject_tokens_are_tenant_scoped():
-    key = b"test-key"
-    assert privacy_job._subject_token(key, "tenant-a", "subject") != (
-        privacy_job._subject_token(key, "tenant-b", "subject")
+    key = "test-key"
+    assert privacy_job.subject_token(key, "tenant-a", "subject") != (
+        privacy_job.subject_token(key, "tenant-b", "subject")
     )
 
 

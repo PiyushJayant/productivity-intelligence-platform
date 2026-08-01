@@ -15,6 +15,7 @@ SECRET_KEYS = {
     "APP_DB_PASSWORD",
     "ANALYTICS_DB_PASSWORD",
     "PRIVACY_DB_PASSWORD",
+    "CDC_DB_PASSWORD",
     "PSEUDONYMIZATION_KEY",
 }
 
@@ -71,18 +72,50 @@ def rotate_secret(key: str, *, target: Path = TARGET) -> Path:
     return target
 
 
+def sync_missing(*, template: Path = TEMPLATE, target: Path = TARGET) -> Path:
+    """Append newly introduced settings without changing existing local values."""
+    if not target.exists():
+        raise FileNotFoundError(f"{target} does not exist; initialize it first")
+    current = target.read_text(encoding="utf-8").splitlines()
+    existing = {
+        line.split("=", 1)[0]
+        for line in current
+        if line and not line.lstrip().startswith("#") and "=" in line
+    }
+    additions: list[str] = []
+    for line in template.read_text(encoding="utf-8").splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0]
+        if key in existing:
+            continue
+        additions.append(
+            f"{key}={secrets.token_urlsafe(36)}" if key in SECRET_KEYS else line
+        )
+    if additions:
+        target.write_text("\n".join(current + [""] + additions) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        target.chmod(0o600)
+    return target
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--sync", action="store_true")
     parser.add_argument("--rotate-secret", choices=sorted(SECRET_KEYS))
     arguments = parser.parse_args()
     if arguments.rotate_secret:
         path = rotate_secret(arguments.rotate_secret)
         print(f"[OK] Rotated {arguments.rotate_secret} in {path} without displaying it.")
         return
+    if arguments.sync:
+        path = sync_missing()
+        print(f"[OK] Added missing settings to {path} without changing existing values.")
+        return
     if not arguments.project:
-        parser.error("--project is required unless --rotate-secret is used")
+        parser.error("--project is required unless --rotate-secret or --sync is used")
     path = initialize(arguments.project, arguments.force)
     print(f"[OK] Created {path}. Review cost and resource settings before deployment.")
 

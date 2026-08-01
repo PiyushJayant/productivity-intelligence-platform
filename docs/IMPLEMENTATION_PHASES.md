@@ -95,13 +95,34 @@ operations that require billing.
 
 ## Phase 4B — CDC and native BigQuery
 
-- `setup/datastream_setup.sh` provisions an initially stopped CDC stream.
-- `setup/native_bigquery_setup.py` creates a required-partition-filter table
-  clustered by tenant, event type, and topic, plus the v3 TVF.
+- Migration `0006_cdc_export_contract.sql` creates a dedicated export table
+  containing HMAC tenant/subject tokens and non-identifying event dimensions.
+  Raw IDs, operational text, entity IDs, and embeddings are excluded.
+- `productivity_cdc` has replication and read access only to that table. The
+  ordinary migration creates neither a publication nor a logical replication
+  slot, preventing dormant slots from retaining WAL.
+- `setup/datastream_setup.sh plan` renders the one-table merge-mode contract
+  offline. `provision` creates only private connectivity and Secret Manager
+  authentication. It cannot create a stream or backfill.
+- `start` is a distinct charged change. It requires the global Phase 5 gate,
+  `ENABLE_DATASTREAM=true`, a CDC-specific acknowledgement, and current
+  SHA-256-verified measurement evidence containing a sustained hard threshold.
+- Datastream creates the native table with daily partitioning and clustering by
+  tenant token, subject token, and event type. Native setup validates its schema,
+  enforces a required partition filter, and installs the v3 TVF.
 - Runtime `ANALYTICS_BACKEND=federated|native` swaps the implementation without
-  changing the model tool signature.
+  changing the model tool signature. The native path receives only server-derived
+  HMAC tokens; the model cannot supply identifiers or tokens.
 - `setup/evaluate_cdc_trigger.py` evaluates approved latency, CPU, CRUD, and
-  concurrency thresholds. It recommends a change but never performs one.
+  concurrency thresholds. Evidence expires after 24 hours, has a minimum sample
+  count, and never performs a cloud change. Resource existence is not evidence.
+
+Activation remains a manual change-management decision. A paused stream can
+retain PostgreSQL WAL and must be monitored or deliberately removed. Cutover to
+`ANALYTICS_BACKEND=native` happens only after backfill reconciliation and a
+separate deployment; it is never switched implicitly. `cdc-reconcile` compares
+bounded v2/v3 results and emits checksum-verifiable evidence. Native mode is
+rejected unless that evidence is current, non-empty, and an exact match.
 
 ## Phase 5 — Billing-enabled cloud execution
 

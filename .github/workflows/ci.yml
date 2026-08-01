@@ -42,6 +42,7 @@ jobs:
           setup/lifecycle.py setup/evaluate_contracts.py setup/smoke_test.py
           setup/migration_runner.py setup/privacy_job.py
           setup/native_bigquery_setup.py setup/evaluate_cdc_trigger.py
+          setup/cdc_contract.py setup/cdc_database.py setup/cdc_reconcile.py
           setup/identity_setup.py setup/load_test.py
           setup/dr_contract.py setup/observability_contract.py
           setup/observability_inventory.py setup/phase3_validate.py

@@ -49,7 +49,12 @@ Usage: setup/phase5.sh ACTION
   privacy    deploy the disabled-by-default privacy maintenance job
   privacy-erase REQUEST_UUID  execute one confirmed erasure request
   native     provision native BigQuery v3 contracts (CDC prerequisite)
-  cdc        provision the disabled-by-default Datastream CDC resources
+  cdc-plan   render and validate the CDC contract without cloud mutation
+  cdc-provision provision private CDC connectivity; does not create a stream
+  cdc-start  create/start CDC only with fresh threshold evidence and extra acknowledgment
+  cdc-reconcile START END OUTPUT  compare v2/v3 before cutover
+  cdc-pause  pause the stream (WAL retention must be monitored)
+  cdc-status inspect stream state without mutation
   load       run the bounded authenticated analytics load contract
   monitoring-plan  validate the monitoring contract without cloud mutation
   monitoring-validate  compare deployed monitoring inventory to the contract
@@ -76,7 +81,16 @@ EOF
   dr-plan)
     "${SCRIPT_DIR}/dr_drill.sh" plan
     ;;
-  identity|provision|build|migrate|deploy|verify|promote|rollback|security|privacy|privacy-erase|native|cdc|load|monitoring-validate|dr-ha|dr-pitr|dr-cleanup|full)
+  cdc-plan)
+    validate_config
+    "${SCRIPT_DIR}/datastream_setup.sh" plan
+    ;;
+  cdc-status)
+    require_command gcloud
+    validate_config
+    "${SCRIPT_DIR}/datastream_setup.sh" status
+    ;;
+  identity|provision|build|migrate|deploy|verify|promote|rollback|security|privacy|privacy-erase|native|cdc-provision|cdc-start|cdc-pause|cdc-reconcile|load|monitoring-validate|dr-ha|dr-pitr|dr-cleanup|full)
     require_command gcloud
     require_phase5_acknowledgement
     case "${ACTION}" in
@@ -98,7 +112,15 @@ EOF
         "${SCRIPT_DIR}/deploy.sh" privacy-erase "$2"
         ;;
       native) "${PYTHON_BIN}" "${SCRIPT_DIR}/native_bigquery_setup.py" ;;
-      cdc) "${SCRIPT_DIR}/datastream_setup.sh" ;;
+      cdc-provision) "${SCRIPT_DIR}/datastream_setup.sh" provision ;;
+      cdc-start) "${SCRIPT_DIR}/datastream_setup.sh" start ;;
+      cdc-pause) "${SCRIPT_DIR}/datastream_setup.sh" pause ;;
+      cdc-reconcile)
+        [[ -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]] || {
+          echo "cdc-reconcile requires START_DATE END_DATE OUTPUT_PATH" >&2; exit 2;
+        }
+        "${PYTHON_BIN}" "${SCRIPT_DIR}/cdc_reconcile.py" run "$2" "$3" --output "$4"
+        ;;
       load) "${PYTHON_BIN}" "${SCRIPT_DIR}/load_test.py" --execute ;;
       monitoring-validate)
         (cd "${REPO_ROOT}" && "${PYTHON_BIN}" -m setup.observability_inventory)

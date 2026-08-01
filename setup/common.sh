@@ -47,7 +47,7 @@ REQUIRED_CONFIG=(
   VPC_NETWORK VPC_SUBNET VPC_SUBNET_RANGE PSA_RANGE_NAME
   ALLOYDB_REGION ALLOYDB_CLUSTER ALLOYDB_INSTANCE ALLOYDB_MACHINE_TYPE
   ALLOYDB_AVAILABILITY_TYPE ALLOYDB_DATABASE ADMIN_DB_USER ALLOYDB_USER
-  ANALYTICS_DB_USER PRIVACY_DB_USER ALLOYDB_IP_TYPE ALLOYDB_ACTIVATION_POLICY
+  ANALYTICS_DB_USER PRIVACY_DB_USER CDC_DB_USER ALLOYDB_IP_TYPE ALLOYDB_ACTIVATION_POLICY
   ALLOYDB_ESTIMATED_HOURLY_USD
   TOOLBOX_URL TOOLBOX_AUDIENCE BIGQUERY_DATASET BIGQUERY_CONNECTION_ID
   BIGQUERY_ANALYTICS_PROCEDURE ANALYTICS_BACKEND BIGQUERY_NATIVE_TVF
@@ -64,9 +64,10 @@ REQUIRED_CONFIG=(
   DR_RTO_TARGET_SECONDS DR_RPO_TARGET_SECONDS DR_CONFIRM
   ASSISTANT_SA_NAME TOOLBOX_SA_NAME MIGRATION_SA_NAME LIFECYCLE_SA_NAME
   PRIVACY_SA_NAME SCHEDULER_SA_NAME LIFECYCLE_ROLE_ID
-  ADMIN_DB_SECRET APP_DB_SECRET ANALYTICS_DB_SECRET PRIVACY_DB_SECRET
+  ADMIN_DB_SECRET APP_DB_SECRET ANALYTICS_DB_SECRET PRIVACY_DB_SECRET CDC_DB_SECRET
   PSEUDONYMIZATION_SECRET
   ADMIN_DB_PASSWORD APP_DB_PASSWORD ANALYTICS_DB_PASSWORD PRIVACY_DB_PASSWORD
+  CDC_DB_PASSWORD
   ASSISTANT_MIN_INSTANCES ASSISTANT_MAX_INSTANCES ASSISTANT_CPU
   ASSISTANT_MEMORY ASSISTANT_CONCURRENCY ASSISTANT_TIMEOUT
   TOOLBOX_MIN_INSTANCES TOOLBOX_MAX_INSTANCES TOOLBOX_CPU TOOLBOX_MEMORY
@@ -97,7 +98,14 @@ REQUIRED_CONFIG=(
   VPC_SC_ENFORCEMENT_ACK
   ENABLE_DATASTREAM DATASTREAM_LOCATION DATASTREAM_STREAM
   DATASTREAM_SOURCE_PROFILE DATASTREAM_DESTINATION_PROFILE
-  BIGQUERY_NATIVE_TABLE ENABLE_BILLABLE_PHASE BILLING_ACK
+  DATASTREAM_PRIVATE_CONNECTION DATASTREAM_PEERING_CIDR DATASTREAM_DB_HOST
+  DATASTREAM_DB_PORT DATASTREAM_PUBLICATION DATASTREAM_REPLICATION_SLOT
+  DATASTREAM_SOURCE_SCHEMA DATASTREAM_SOURCE_TABLE
+  DATASTREAM_DATA_FRESHNESS_SECONDS BIGQUERY_NATIVE_TABLE
+  CDC_TRIGGER_EVIDENCE_PATH CDC_TRIGGER_EVIDENCE_SHA256
+  CDC_RECONCILIATION_EVIDENCE_PATH CDC_RECONCILIATION_EVIDENCE_SHA256
+  CDC_PROVISION_ACK CDC_START_ACK
+  ENABLE_BILLABLE_PHASE BILLING_ACK
 )
 
 for config_name in "${REQUIRED_CONFIG[@]}"; do
@@ -167,6 +175,31 @@ validate_config() {
         "${ENABLE_DATASTREAM}" != "true" ]]; then
     echo "Error: native analytics requires ENABLE_DATASTREAM=true." >&2
     exit 1
+  fi
+  if [[ "${ANALYTICS_BACKEND}" == "native" ]]; then
+    [[ "${CDC_RECONCILIATION_EVIDENCE_PATH}" != replace-* &&
+       "${CDC_RECONCILIATION_EVIDENCE_SHA256}" =~ ^[0-9a-f]{64}$ ]] || {
+      echo "Error: native analytics requires approved reconciliation evidence." >&2
+      exit 1
+    }
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/cdc_reconcile.py" verify \
+      "${CDC_RECONCILIATION_EVIDENCE_PATH}" \
+      --expected-sha256="${CDC_RECONCILIATION_EVIDENCE_SHA256}" || exit 1
+  fi
+  if [[ "${ENABLE_DATASTREAM}" == "true" ]]; then
+    [[ "${ENABLE_MONITORING}" == "true" ]] || {
+      echo "Error: ENABLE_DATASTREAM=true requires monitoring." >&2
+      exit 1
+    }
+    [[ "${CDC_START_ACK}" == "I_ACKNOWLEDGE_CDC_ACTIVATION_COST" ]] || {
+      echo "Error: ENABLE_DATASTREAM=true requires CDC_START_ACK." >&2
+      exit 1
+    }
+    [[ "${CDC_TRIGGER_EVIDENCE_PATH}" != replace-* &&
+       "${CDC_TRIGGER_EVIDENCE_SHA256}" =~ ^[0-9a-f]{64}$ ]] || {
+      echo "Error: ENABLE_DATASTREAM=true requires approved CDC evidence." >&2
+      exit 1
+    }
   fi
   [[ "${AUTH_MODE}" == "identity_platform" || "${AUTH_MODE}" == "disabled" ]] || {
     echo "Error: AUTH_MODE must be identity_platform or disabled." >&2
@@ -288,6 +321,7 @@ validate_config() {
       LOAD_TEST_MAX_BYTES_BILLED \
       DR_RTO_TARGET_SECONDS DR_RPO_TARGET_SECONDS \
       PRIVACY_BATCH_SIZE PRIVACY_MAX_BATCHES \
+      DATASTREAM_DB_PORT DATASTREAM_DATA_FRESHNESS_SECONDS \
       ARTIFACT_RETENTION_DAYS ALLOYDB_STATE_TIMEOUT_SECONDS EMBEDDING_DIMENSIONS \
       MONITORING_ALIGNMENT_SECONDS MONITORING_5XX_RATE_THRESHOLD \
       MONITORING_P95_LATENCY_MS MONITORING_ALLOYDB_CONNECTION_THRESHOLD \
@@ -350,7 +384,7 @@ validate_config() {
       MONITORING_ALIGNMENT_SECONDS MONITORING_P95_LATENCY_MS \
       MONITORING_ALLOYDB_CONNECTION_THRESHOLD UPTIME_CHECK_PERIOD \
       DEFAULT_PAGE_SIZE AGENT_CONTEXT_MAX_EVENTS PRIVACY_BATCH_SIZE \
-      PRIVACY_MAX_BATCHES; do
+      PRIVACY_MAX_BATCHES DATASTREAM_DB_PORT DATASTREAM_DATA_FRESHNESS_SECONDS; do
     [[ "${!positive_name}" -ge 1 ]] || {
       echo "Error: ${positive_name} must be greater than zero." >&2
       exit 1
@@ -369,7 +403,7 @@ validate_config() {
   }
   [[ "${#ADMIN_DB_PASSWORD}" -ge 24 && "${#APP_DB_PASSWORD}" -ge 24 &&
       "${#ANALYTICS_DB_PASSWORD}" -ge 24 &&
-      "${#PRIVACY_DB_PASSWORD}" -ge 24 ]] || {
+      "${#PRIVACY_DB_PASSWORD}" -ge 24 && "${#CDC_DB_PASSWORD}" -ge 24 ]] || {
     echo "Error: every database password in ${ENV_FILE} must contain at least 24 characters." >&2
     exit 1
   }
@@ -377,6 +411,7 @@ validate_config() {
       "${ALLOYDB_USER}" =~ ^[a-z][a-z0-9_]{0,62}$ &&
       "${ANALYTICS_DB_USER}" =~ ^[a-z][a-z0-9_]{0,62}$ &&
       "${PRIVACY_DB_USER}" =~ ^[a-z][a-z0-9_]{0,62}$ &&
+      "${CDC_DB_USER}" =~ ^[a-z][a-z0-9_]{0,62}$ &&
       "${ALLOYDB_DATABASE}" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || {
     echo "Error: database and user names must be lowercase PostgreSQL identifiers." >&2
     exit 1
@@ -397,8 +432,12 @@ validate_config() {
       "${ALLOYDB_USER}" != "${ANALYTICS_DB_USER}" &&
       "${PRIVACY_DB_USER}" != "${ADMIN_DB_USER}" &&
       "${PRIVACY_DB_USER}" != "${ALLOYDB_USER}" &&
-      "${PRIVACY_DB_USER}" != "${ANALYTICS_DB_USER}" ]] || {
-    echo "Error: administrator, application, analytics, and privacy users must be distinct." >&2
+      "${PRIVACY_DB_USER}" != "${ANALYTICS_DB_USER}" &&
+      "${CDC_DB_USER}" != "${ADMIN_DB_USER}" &&
+      "${CDC_DB_USER}" != "${ALLOYDB_USER}" &&
+      "${CDC_DB_USER}" != "${ANALYTICS_DB_USER}" &&
+      "${CDC_DB_USER}" != "${PRIVACY_DB_USER}" ]] || {
+    echo "Error: all database principals must be distinct." >&2
     exit 1
   }
   [[ "${ALLOYDB_ESTIMATED_HOURLY_USD}" =~ ^[0-9]+([.][0-9]+)?$ &&
@@ -426,6 +465,38 @@ validate_config() {
     echo "Error: PRIVACY_TIMEZONE must be a valid IANA timezone." >&2
     exit 1
   }
+  [[ "${DATASTREAM_LOCATION}" == "${REGION}" ]] || {
+    echo "Error: DATASTREAM_LOCATION must match REGION." >&2
+    exit 1
+  }
+  "${PYTHON_BIN}" -c \
+    'import ipaddress,os; network=ipaddress.ip_network(os.environ["DATASTREAM_PEERING_CIDR"], strict=True); assert network.version == 4 and network.prefixlen == 29 and network.is_private' || {
+    echo "Error: DATASTREAM_PEERING_CIDR must be a canonical private IPv4 /29." >&2
+    exit 1
+  }
+  [[ "${DATASTREAM_DATA_FRESHNESS_SECONDS}" -ge 60 &&
+      "${DATASTREAM_DATA_FRESHNESS_SECONDS}" -le 86400 ]] || {
+    echo "Error: DATASTREAM_DATA_FRESHNESS_SECONDS must be 60..86400." >&2
+    exit 1
+  }
+  for cdc_identifier in CDC_DB_USER DATASTREAM_PUBLICATION \
+      DATASTREAM_REPLICATION_SLOT DATASTREAM_SOURCE_SCHEMA \
+      DATASTREAM_SOURCE_TABLE BIGQUERY_NATIVE_TABLE; do
+    [[ "${!cdc_identifier}" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || {
+      echo "Error: ${cdc_identifier} must be a lowercase SQL identifier." >&2
+      exit 1
+    }
+  done
+  [[ "${CDC_PROVISION_ACK}" == "NOT_ACKNOWLEDGED" ||
+      "${CDC_PROVISION_ACK}" == "I_ACKNOWLEDGE_CDC_PROVISIONING_COST" ]] || {
+    echo "Error: CDC_PROVISION_ACK has an unsupported value." >&2
+    exit 1
+  }
+  [[ "${CDC_START_ACK}" == "NOT_ACKNOWLEDGED" ||
+      "${CDC_START_ACK}" == "I_ACKNOWLEDGE_CDC_ACTIVATION_COST" ]] || {
+    echo "Error: CDC_START_ACK has an unsupported value." >&2
+    exit 1
+  }
   [[ "${LIFECYCLE_RESUME_CRON}" != "${LIFECYCLE_SUSPEND_CRON}" ]] || {
     echo "Error: lifecycle resume and suspend schedules must differ." >&2
     exit 1
@@ -448,6 +519,7 @@ validate_config() {
       "${APP_DB_PASSWORD}" != *"change-me"* &&
       "${ANALYTICS_DB_PASSWORD}" != *"change-me"* &&
       "${PRIVACY_DB_PASSWORD}" != *"change-me"* &&
+      "${CDC_DB_PASSWORD}" != *"change-me"* &&
       "${PSEUDONYMIZATION_KEY}" != *"change-me"* &&
       "${#PSEUDONYMIZATION_KEY}" -ge 32 ]] || {
     echo "Error: replace all password/key placeholders in ${ENV_FILE}." >&2
@@ -458,7 +530,11 @@ validate_config() {
       "${APP_DB_PASSWORD}" != "${ANALYTICS_DB_PASSWORD}" &&
       "${PRIVACY_DB_PASSWORD}" != "${ADMIN_DB_PASSWORD}" &&
       "${PRIVACY_DB_PASSWORD}" != "${APP_DB_PASSWORD}" &&
-      "${PRIVACY_DB_PASSWORD}" != "${ANALYTICS_DB_PASSWORD}" ]] || {
+      "${PRIVACY_DB_PASSWORD}" != "${ANALYTICS_DB_PASSWORD}" &&
+      "${CDC_DB_PASSWORD}" != "${ADMIN_DB_PASSWORD}" &&
+      "${CDC_DB_PASSWORD}" != "${APP_DB_PASSWORD}" &&
+      "${CDC_DB_PASSWORD}" != "${ANALYTICS_DB_PASSWORD}" &&
+      "${CDC_DB_PASSWORD}" != "${PRIVACY_DB_PASSWORD}" ]] || {
     echo "Error: database passwords must be independent values." >&2
     exit 1
   }

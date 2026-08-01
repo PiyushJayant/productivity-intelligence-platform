@@ -1,5 +1,6 @@
 CREATE ROLE productivity_app NOLOGIN;
 CREATE ROLE productivity_privacy NOLOGIN;
+CREATE ROLE productivity_cdc NOLOGIN;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE tenants (

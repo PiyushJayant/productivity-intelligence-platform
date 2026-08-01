@@ -141,13 +141,14 @@ ensure_secret_from_env "${ADMIN_DB_SECRET}" "${ADMIN_DB_PASSWORD}"
 ensure_secret_from_env "${APP_DB_SECRET}" "${APP_DB_PASSWORD}"
 ensure_secret_from_env "${ANALYTICS_DB_SECRET}" "${ANALYTICS_DB_PASSWORD}"
 ensure_secret_from_env "${PRIVACY_DB_SECRET}" "${PRIVACY_DB_PASSWORD}"
+ensure_secret_from_env "${CDC_DB_SECRET}" "${CDC_DB_PASSWORD}"
 ensure_secret_from_env "${PSEUDONYMIZATION_SECRET}" "${PSEUDONYMIZATION_KEY}"
 
 gcloud secrets add-iam-policy-binding "${APP_DB_SECRET}" --project="${PROJECT_ID}" \
   --member="serviceAccount:${TOOLBOX_SA}" --role=roles/secretmanager.secretAccessor \
   --condition=None --quiet >/dev/null
 for secret in "${ADMIN_DB_SECRET}" "${APP_DB_SECRET}" \
-    "${ANALYTICS_DB_SECRET}" "${PRIVACY_DB_SECRET}"; do
+    "${ANALYTICS_DB_SECRET}" "${PRIVACY_DB_SECRET}" "${CDC_DB_SECRET}"; do
   gcloud secrets add-iam-policy-binding "${secret}" --project="${PROJECT_ID}" \
     --member="serviceAccount:${MIGRATION_SA}" --role=roles/secretmanager.secretAccessor \
     --condition=None --quiet >/dev/null

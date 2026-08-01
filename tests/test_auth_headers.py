@@ -63,7 +63,12 @@ def test_loaded_toolset_keeps_owning_client_open(monkeypatch):
             self.instances.append(self)
 
         def load_toolset(self, name, **kwargs):
-            assert set(kwargs["bound_params"]) == {"tenant_id", "subject_id"}
+            assert set(kwargs["bound_params"]) == {
+                "tenant_id",
+                "subject_id",
+                "tenant_token",
+                "subject_token",
+            }
             assert kwargs["strict"] is True
             return [f"tool-from-{name}"]
 

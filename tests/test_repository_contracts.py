@@ -61,7 +61,12 @@ def test_toolbox_configuration_is_valid_and_parameterized():
     for name in agent_tools:
         tool = config["tools"][name]
         parameter_names = [parameter["name"] for parameter in tool["parameters"]]
-        assert parameter_names[-2:] == ["tenant_id", "subject_id"]
+        if name in {"create_task", "create_note", "create_event"}:
+            assert parameter_names[-4:] == [
+                "tenant_id", "subject_id", "tenant_token", "subject_token"
+            ]
+        else:
+            assert parameter_names[-2:] == ["tenant_id", "subject_id"]
         assert "tenant_id" in tool["statement"]
         positions = {
             int(position) for position in re.findall(r"\$(\d+)", tool["statement"])
@@ -137,7 +142,8 @@ def test_migration_image_contains_the_complete_versioned_migration_runtime():
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
 
     assert "COPY setup ./setup" in dockerfile
-    assert '["python", "-m", "setup.migrate"]' in dockerfile
+    assert 'ENTRYPOINT ["python"]' in dockerfile
+    assert 'CMD ["-m", "setup.migrate"]' in dockerfile
     for required_path in (
         "!setup/__init__.py",
         "!setup/migration_runner.py",
@@ -155,6 +161,7 @@ def test_environment_initializer_generates_every_local_secret():
         "APP_DB_PASSWORD",
         "ANALYTICS_DB_PASSWORD",
         "PRIVACY_DB_PASSWORD",
+        "CDC_DB_PASSWORD",
         "PSEUDONYMIZATION_KEY",
     ):
         assert f'"{secret}"' in initializer
@@ -393,3 +400,20 @@ def test_billing_gate_allows_only_suspension_and_cost_inspection():
     assert 'promote) "${SCRIPT_DIR}/deploy.sh" promote' in phase5
     assert '"${SCRIPT_DIR}/deploy.sh" rollback "$2"' in phase5
     assert 'rollback) rollback "${2:-}"' in deploy
+
+
+def test_cdc_activation_is_separate_evidence_gated_and_secret_safe():
+    script = (ROOT / "setup" / "datastream_setup.sh").read_text(encoding="utf-8")
+    migration = (
+        ROOT / "setup" / "migrations" / "0006_cdc_export_contract.sql"
+    ).read_text(encoding="utf-8")
+    provision = script.split("provision()", 1)[1].split("start()", 1)[0]
+    start = script.split("start()", 1)[1].split('case "${ACTION}"', 1)[0]
+    assert "--password=" not in script
+    assert "--postgresql-secret-manager-stored-password" in provision
+    assert "streams create" not in provision
+    assert "pg_create_logical_replication_slot" not in migration
+    assert "verify_activation_evidence" in start
+    assert "CDC_START_ACK" in start
+    assert "streams create" in start
+    assert "--force" not in start

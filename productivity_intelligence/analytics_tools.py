@@ -22,6 +22,7 @@ from productivity_intelligence.identity import (
     current_subject_id,
     current_subject_token,
     current_tenant_id,
+    current_tenant_token,
 )
 from productivity_intelligence.resilience import retry_with_backoff
 
@@ -91,7 +92,7 @@ def get_productivity_trends(
     else:
         query = (
             f"SELECT * FROM `{dataset}.{settings.bigquery_native_tvf}`"
-            "(@start_date, @end_date, @grain, @tenant_id, @subject_token)"
+            "(@start_date, @end_date, @grain, @tenant_token, @subject_token)"
         )
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
@@ -99,7 +100,12 @@ def get_productivity_trends(
             bigquery.ScalarQueryParameter("end_date", "DATE", end),
             bigquery.ScalarQueryParameter("grain", "STRING", grain),
             bigquery.ScalarQueryParameter(
-                "tenant_id", "STRING", current_tenant_id()
+                "tenant_id" if settings.analytics_backend == "federated"
+                else "tenant_token",
+                "STRING",
+                current_tenant_id()
+                if settings.analytics_backend == "federated"
+                else current_tenant_token(),
             ),
             bigquery.ScalarQueryParameter(
                 "subject_id" if settings.analytics_backend == "federated"

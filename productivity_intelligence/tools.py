@@ -16,7 +16,9 @@ from productivity_intelligence.config import settings
 from productivity_intelligence.google_auth_headers import RefreshingGoogleAuthHeaders
 from productivity_intelligence.identity import (
     current_subject_id,
+    current_subject_token,
     current_tenant_id,
+    current_tenant_token,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -74,6 +76,8 @@ def load_toolset(toolset_name: str):
             bound_params={
                 "tenant_id": current_tenant_id,
                 "subject_id": current_subject_id,
+                "tenant_token": current_tenant_token,
+                "subject_token": current_subject_token,
             },
             strict=True,
         )

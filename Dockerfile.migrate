@@ -4,6 +4,9 @@ WORKDIR /app
 COPY requirements-migrate.txt .
 RUN pip install --no-cache-dir -r requirements-migrate.txt
 COPY setup ./setup
+COPY productivity_intelligence/__init__.py ./productivity_intelligence/__init__.py
+COPY productivity_intelligence/tokenization.py ./productivity_intelligence/tokenization.py
 
 WORKDIR /app
-CMD ["python", "-m", "setup.migrate"]
+ENTRYPOINT ["python"]
+CMD ["-m", "setup.migrate"]
